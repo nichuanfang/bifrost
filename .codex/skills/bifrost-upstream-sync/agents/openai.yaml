@@ -1,0 +1,7 @@
+interface:
+  display_name: "Bifrost Upstream Sync"
+  short_description: "Safely merge latest Bifrost upstream changes"
+  default_prompt: "Use $bifrost-upstream-sync to safely synchronize this fork with the latest Bifrost upstream."
+
+policy:
+  allow_implicit_invocation: false
