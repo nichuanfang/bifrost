@@ -1,0 +1,87 @@
+name: Publish Bifrost to GHCR
+
+on:
+  push:
+    tags:
+      - "v*"
+
+  workflow_dispatch:
+    inputs:
+      publish_latest:
+        description: "Also update the latest tag"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: publish-ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/bifrost
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.event_name == 'push' || inputs.publish_latest == true }}
+          labels: |
+            org.opencontainers.image.title=Bifrost
+            org.opencontainers.image.description=High-performance LLM gateway and proxy
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Resolve build version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${GITHUB_SHA::12}"
+          fi
+
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./transports/Dockerfile.local
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
+
+          # 使用 GitHub Actions Cache 加速后续构建
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
