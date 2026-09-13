@@ -10,6 +10,7 @@ smallest useful set from the files changed by the prepared upstream merge.
 | `ui/` | `(cd ui && npm run typecheck)` |
 | `.github/workflows/` | YAML/workflow lint if available; inspect action inputs and permissions |
 | `transports/Dockerfile*`, Go build files, or UI build files | Docker Buildx smoke build when Docker is available |
+| `plugins/pii-masking/` or `plugins/vision-extension/` | Run `go test ./...` from each module, inspect exported `.so` symbols, and build them with the same dynamic host/toolchain |
 
 For this fork, provider response parsing changes should also keep the relevant
 OpenAI-compatible, Gemini, and Mistral tests in the validation set. Do not

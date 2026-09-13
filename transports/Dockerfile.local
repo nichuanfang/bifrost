@@ -50,18 +50,37 @@
   # Copy UI build output into transports
   COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
 
-  # Build the binary with CGO enabled and static SQLite linking
+  # Build the binary with CGO enabled and dynamic linking.
+  # Go's native plugin loader cannot load a statically linked executable.
   ARG VERSION=unknown
   RUN cd /build/transports && \
     go build \
-      -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
+      -ldflags="-w -s -X main.Version=v${VERSION}" \
       -a -trimpath \
-      -tags "sqlite_static" \
       -o /app/main \
       ./bifrost-http
 
   # Verify build succeeded
   RUN test -f /app/main || (echo "Build failed" && exit 1)
+
+  # Build the custom plugins in the same workspace and toolchain as Bifrost.
+  # This keeps the Go package hashes, libc implementation, architecture, and
+  # compiler version identical between the host binary and every .so plugin.
+  RUN mkdir -p /app/plugins && \
+    for plugin_dir in ./plugins/pii-masking ./plugins/vision-extension; do \
+      plugin_name=$(basename "$plugin_dir"); \
+      echo "Building custom plugin: $plugin_name"; \
+      cd "/build/$plugin_dir" && \
+      go build \
+        -buildmode=plugin \
+        -ldflags="-w -s" \
+        -a -trimpath \
+        -o "/app/plugins/${plugin_name}.so" \
+        .; \
+      cd /build; \
+    done && \
+    test -f /app/plugins/pii-masking.so && \
+    test -f /app/plugins/vision-extension.so
 
   # --- Runtime Stage: Minimal runtime image ---
   FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
@@ -76,6 +95,7 @@
 
   # Create data directory and set up user
   COPY --from=builder /app/main .
+  COPY --from=builder /app/plugins/ ./plugins/
   COPY --from=builder /build/transports/docker-entrypoint.sh .
 
   # Getting arguments

@@ -59,3 +59,24 @@ to encode fork-specific behavior in the repository's general `AGENTS.md`.
   Do not silently switch to the proxy-based `transports/Dockerfile`.
 - Validation: workflow inspection, transports dependency validation, and a
   Docker Buildx smoke build when Docker is available.
+
+### Custom PII and vision plugins in the local-module image
+
+- Commit: `feat(plugins): integrate custom pii and vision plugins`
+- Behavior: the fork includes the `pii-masking` and `vision-extension` native
+  plugins. `transports/Dockerfile.local` builds the Bifrost host dynamically
+  and compiles both `.so` files from the same local Go workspace, toolchain,
+  libc implementation, and target architecture before copying them into
+  `/app/plugins/`. Plugins remain opt-in through explicit `config.json`
+  entries; the standard `transports/Dockerfile` remains the static image.
+- Affected paths: `plugins/pii-masking`, `plugins/vision-extension`,
+  `transports/Dockerfile.local`, and
+  `examples/configs/withcustomplugins/config.json`.
+- Compatibility rule: whenever core, Go, the Alpine/musl toolchain, or the
+  target architecture changes, rebuild both plugins together with the host
+  binary. Preserve dynamic linking for the plugin-enabled image and keep
+  plugin paths under `/app/plugins/`.
+- Validation: run `go test ./...` in both custom plugin modules, run the
+  dynamic-plugin loader tests in `framework/plugins`, inspect exported plugin
+  symbols, validate the example JSON, and run a Docker Buildx smoke build
+  before publishing the image.
