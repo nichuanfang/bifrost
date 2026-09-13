@@ -133,8 +133,14 @@ func (provider *OpenRouterProvider) fetchEmbeddingModels(ctx *schemas.BifrostCon
 		return nil
 	}
 
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		provider.logger.Debug("openrouter: failed to decode embedding models response, skipping")
+		return nil
+	}
+
 	var embeddingResponse schemas.BifrostListModelsResponse
-	if _, _, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &embeddingResponse, nil, false, false); bifrostErr != nil {
+	if _, _, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &embeddingResponse, nil, false, false); bifrostErr != nil {
 		provider.logger.Debug("openrouter: failed to parse embedding models response, skipping")
 		return nil
 	}
@@ -198,13 +204,18 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 
 	var openrouterResponse schemas.BifrostListModelsResponse
 	if modelsFetched {
-		// Copy response body before releasing
-		responseBody := append([]byte(nil), resp.Body()...)
+		responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+		if decodeErr != nil {
+			return nil, providerUtils.SetErrorLatency(
+				providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+				latency,
+			)
+		}
 
 		// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, bifrostErr
+			return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 		}
 
 		// Set raw request if enabled

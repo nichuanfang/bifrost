@@ -384,15 +384,28 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 
-			// Parse Vertex's publisher models response
-			var vertexResponse VertexListPublisherModelsResponse
-			rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-			if bifrostErr != nil {
+			// Decode before parsing so compressed publisher catalogs produce a clear
+			// response-decode error rather than a JSON unmarshal error.
+			responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+			if decodeErr != nil {
 				respBody := append([]byte(nil), resp.Body()...)
 				wait()
 				fasthttp.ReleaseRequest(req)
 				fasthttp.ReleaseResponse(resp)
-				return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+				return nil, providerUtils.EnrichError(ctx, providerUtils.SetErrorLatency(
+					providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+					latency,
+				), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			}
+
+			// Parse Vertex's publisher models response
+			var vertexResponse VertexListPublisherModelsResponse
+			rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &vertexResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+			if bifrostErr != nil {
+				wait()
+				fasthttp.ReleaseRequest(req)
+				fasthttp.ReleaseResponse(resp)
+				return nil, providerUtils.EnrichError(ctx, providerUtils.SetErrorLatency(bifrostErr, latency), nil, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 			if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 				rawRequests = append(rawRequests, rawRequest)

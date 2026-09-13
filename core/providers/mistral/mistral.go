@@ -108,14 +108,21 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 
-	// Copy response body before releasing
-	responseBody := append([]byte(nil), resp.Body()...)
+	// Decode the response body before parsing it. Mistral-compatible endpoints
+	// may return gzip/deflate/br/zstd encoded model catalogs.
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.SetErrorLatency(
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+			latency,
+		)
+	}
 
 	// Parse Mistral's response
 	var mistralResponse MistralListModelsResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &mistralResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	// Create final response

@@ -106,10 +106,18 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		return nil, providerUtils.SetErrorLatency(parseElevenlabsError(resp), latency)
 	}
 
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.SetErrorLatency(
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+			latency,
+		)
+	}
+
 	var elevenlabsResponse ElevenlabsListModelsResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &elevenlabsResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &elevenlabsResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	response := elevenlabsResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.ModelAccess(), key.Aliases, request.Unfiltered)

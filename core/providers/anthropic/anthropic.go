@@ -364,11 +364,21 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
+	// Decode the response body before parsing it so compressed provider responses
+	// are reported as decode errors instead of opaque JSON errors.
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.SetErrorLatency(
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+			latency,
+		)
+	}
+
 	// Parse Anthropic's response
 	var anthropicResponse AnthropicListModelsResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &anthropicResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &anthropicResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	// Create final response

@@ -366,18 +366,25 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
-		// Make a copy of the response body before releasing
-		bodyCopy := make([]byte, len(resp.Body()))
-		copy(bodyCopy, resp.Body())
+		// Decode before releasing the response. Replicate deployments endpoints may
+		// return compressed JSON and fasthttp does not decode it automatically.
+		bodyCopy, decodeErr := providerUtils.CheckAndDecodeBody(resp)
 
 		fasthttp.ReleaseResponse(resp)
+		if decodeErr != nil {
+			return nil, providerUtils.SetErrorLatency(
+				providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+				latency,
+			)
+		}
 
 		// Parse response from the copy
 		var pageResponse ReplicateDeploymentListResponse
 		if err := sonic.Unmarshal(bodyCopy, &pageResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(
-				"failed to parse deployments response",
-				err)
+			return nil, providerUtils.SetErrorLatency(
+				providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err),
+				latency,
+			)
 		}
 
 		// Append results from this page

@@ -173,8 +173,15 @@ func ListModelsByKey(
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
-	// Copy response body before releasing
-	responseBody := append([]byte(nil), resp.Body()...)
+	// Decode the response body before parsing it. OpenAI-compatible providers may
+	// return compressed model catalogs, and fasthttp leaves those bytes encoded.
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.SetErrorLatency(
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+			latency,
+		)
+	}
 
 	openaiResponse := &OpenAIListModelsResponse{}
 

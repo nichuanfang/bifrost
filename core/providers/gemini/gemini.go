@@ -226,15 +226,25 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
+	// Decode the response body before parsing it. fasthttp leaves Content-Encoding
+	// bodies untouched, including gzip responses from compatible endpoints.
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.SetErrorLatency(
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr),
+			latency,
+		)
+	}
+
 	// Parse Gemini's response
 	var geminiResponse GeminiListModelsResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 	if len(geminiResponse.Models) == 0 {
 		var singleModel GeminiModel
-		if err := sonic.Unmarshal(resp.Body(), &singleModel); err == nil && singleModel.Name != "" {
+		if err := sonic.Unmarshal(responseBody, &singleModel); err == nil && singleModel.Name != "" {
 			geminiResponse.Models = []GeminiModel{singleModel}
 		}
 	}
