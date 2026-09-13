@@ -71,8 +71,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { isEnterpriseOnlyRoute } from "@/lib/constants/enterprise";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -253,20 +254,23 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-		? "bg-sidebar-accent text-accent-foreground border-primary/20"
-		: isActive || isAnySubItemActive
-			? "bg-sidebar-accent text-primary border-primary/20"
-			: item.hasAccess
-				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-		} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+		isHighlighted
+			? "bg-sidebar-accent text-accent-foreground border-primary/20"
+			: isActive || isAnySubItemActive
+				? "bg-sidebar-accent text-primary border-primary/20"
+				: item.hasAccess
+					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+	} `;
 
 	const innerContent = (
 		<div className="flex w-full min-w-0 items-center justify-between">
 			<div className="flex w-full min-w-0 items-center gap-2">
 				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-				<span className={`min-w-0 truncate text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
+				<span
+					className={`min-w-0 truncate text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
+				>
 					{item.title}
 				</span>
 				{item.tag && (
@@ -367,7 +371,9 @@ const SidebarItemView = ({
 									{SubItemIcon && (
 										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
 									)}
-									<span className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}>
+									<span
+										className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}
+									>
 										{subItem.title}
 									</span>
 									{subItem.tag && (
@@ -413,14 +419,15 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-							? "bg-sidebar-accent text-accent-foreground"
-							: isSubItemActive
-								? "bg-sidebar-accent text-primary font-medium"
-								: subItem.hasAccess === false
-									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-							}`;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+							isSubItemHighlighted
+								? "bg-sidebar-accent text-accent-foreground"
+								: isSubItemActive
+									? "bg-sidebar-accent text-primary font-medium"
+									: subItem.hasAccess === false
+										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+						}`;
 						const subInner = (
 							<div className="flex w-full min-w-0 items-center gap-2">
 								{SubItemIcon && (
@@ -465,45 +472,6 @@ const SidebarItemView = ({
 	);
 };
 
-// Helper function to compare semantic versions
-const compareVersions = (v1: string, v2: string): number => {
-	// Remove 'v' prefix if present
-	const cleanV1 = v1.startsWith("v") ? v1.slice(1) : v1;
-	const cleanV2 = v2.startsWith("v") ? v2.slice(1) : v2;
-
-	// Split into main version and prerelease
-	const [mainV1, prereleaseV1] = cleanV1.split("-");
-	const [mainV2, prereleaseV2] = cleanV2.split("-");
-
-	// Compare main version numbers (major.minor.patch)
-	const partsV1 = mainV1.split(".").map(Number);
-	const partsV2 = mainV2.split(".").map(Number);
-
-	for (let i = 0; i < Math.max(partsV1.length, partsV2.length); i++) {
-		const num1 = partsV1[i] || 0;
-		const num2 = partsV2[i] || 0;
-
-		if (num1 > num2) return 1;
-		if (num1 < num2) return -1;
-	}
-
-	// If main versions are equal, check prerelease
-	// Version without prerelease is higher than version with prerelease
-	if (!prereleaseV1 && prereleaseV2) return 1;
-	if (prereleaseV1 && !prereleaseV2) return -1;
-
-	// Both have prereleases, compare them
-	if (prereleaseV1 && prereleaseV2) {
-		// Extract prerelease number (e.g., "prerelease1" -> 1)
-		const prereleaseNum1 = parseInt(prereleaseV1.replace(/\D/g, "")) || 0;
-		const prereleaseNum2 = parseInt(prereleaseV2.replace(/\D/g, "")) || 0;
-
-		if (prereleaseNum1 > prereleaseNum2) return 1;
-		if (prereleaseNum1 < prereleaseNum2) return -1;
-	}
-	return 0;
-};
-
 export default function AppSidebar() {
 	const pathname = useLocation({ select: (l) => l.pathname });
 	const search = useLocation({ select: (l) => l.searchStr ?? "" });
@@ -525,9 +493,6 @@ export default function AppSidebar() {
 	]);
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
 	const isOnboardingCardDismissed = !!cookies[ONBOARDING_CARD_DISMISSED_COOKIE];
-	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
-		skip: !mounted, // Only fetch after component is mounted
-	});
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
 	// Alerting is currently surfaced under the existing governance permission
@@ -974,21 +939,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-					{
-						title: "Prompt Repository",
-						url: "/workspace/prompt-repo",
-						icon: FolderGit,
-						description: "Prompt repository",
-						hasAccess: hasPromptRepositoryAccess,
-					},
-					{
-						title: "Skills Repository",
-						url: "/workspace/skills-repo",
-						icon: BookOpenText,
-						description: "Skills repository",
-						hasAccess: hasSkillsRepositoryAccess,
-					},
-				]
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess,
+						},
+						{
+							title: "Skills Repository",
+							url: "/workspace/skills-repo",
+							icon: BookOpenText,
+							description: "Skills repository",
+							hasAccess: hasSkillsRepositoryAccess,
+						},
+					]
 				: []),
 			{
 				title: "Settings",
@@ -1027,14 +992,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Proxy",
+									url: "/workspace/config/proxy",
+									icon: Globe,
+									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 					{
 						title: "API Keys",
@@ -1059,21 +1024,21 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Branding",
-								url: "/workspace/config/branding",
-								icon: Palette,
-								description: "Custom logo and icon",
-								hasAccess: hasSettingsAccess,
-							},
-							{
-								title: "License Info",
-								url: "/workspace/config/license",
-								icon: BadgeInfo,
-								description: "Enterprise license information",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Branding",
+									url: "/workspace/config/branding",
+									icon: Palette,
+									description: "Custom logo and icon",
+									hasAccess: hasSettingsAccess,
+								},
+								{
+									title: "License Info",
+									url: "/workspace/config/license",
+									icon: BadgeInfo,
+									description: "Enterprise license information",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 				],
 			},
@@ -1122,9 +1087,12 @@ export default function AppSidebar() {
 	const accessibleItems: SidebarItem[] = useMemo(() => {
 		return items
 			.map((item) => {
+				if (!IS_ENTERPRISE && isEnterpriseOnlyRoute(item.url)) return null;
 				const hadSubItems = !!item.subItems?.length;
 				if (hadSubItems) {
-					const visibleSubItems = item.subItems!.filter((sub) => sub.hasAccess !== false);
+					const visibleSubItems = item.subItems!.filter(
+						(sub) => sub.hasAccess !== false && (IS_ENTERPRISE || !isEnterpriseOnlyRoute(sub.url)),
+					);
 					if (visibleSubItems.length === 0) return null;
 					return { ...item, subItems: visibleSubItems, hasAccess: true };
 				}
@@ -1154,15 +1122,7 @@ export default function AppSidebar() {
 			.filter(Boolean) as SidebarItem[];
 	}, [accessibleItems, searchQuery]);
 
-	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
-	const showNewReleaseBanner = useMemo(() => {
-		if (IS_ENTERPRISE) return false;
-		if (latestRelease && version) {
-			return compareVersions(latestRelease.name, version) > 0;
-		}
-		return false;
-	}, [latestRelease, version]);
 
 	useEffect(() => {
 		setMounted(true);
@@ -1330,9 +1290,6 @@ export default function AppSidebar() {
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
-	// New release image - based on theme
-	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.webp" : "/images/new-release-image.webp";
-
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
 		const cards = [];
@@ -1377,26 +1334,6 @@ export default function AppSidebar() {
 				variant: "warning" as const,
 			});
 		}
-		if (showNewReleaseBanner && latestRelease) {
-			cards.push({
-				id: "new-release",
-				title: `${latestRelease.name} is now available.`,
-				description: (
-					<div className="flex h-full flex-col gap-2">
-						<img src={newReleaseImage} alt="Bifrost" className="h-[95px] rounded-md object-cover" />
-						<a
-							href={`https://docs.getbifrost.ai/changelogs/${latestRelease.name}`}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="text-primary mt-auto pb-1 font-medium underline"
-						>
-							View release notes
-						</a>
-					</div>
-				),
-				dismissible: true,
-			});
-		}
 		// Only show after mounted to ensure cookie is properly hydrated and avoid flash
 		if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
 			cards.push(productionSetupHelpCard);
@@ -1404,9 +1341,6 @@ export default function AppSidebar() {
 		return cards;
 	}, [
 		coreConfig?.restart_required,
-		showNewReleaseBanner,
-		latestRelease,
-		newReleaseImage,
 		isProductionSetupDismissed,
 		mounted,
 		showOnboardingResumeCard,
@@ -1515,7 +1449,7 @@ export default function AppSidebar() {
 				</div>
 			</div>
 			<SidebarContent className="overflow-hidden">
-				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-3 pt-0.5">
+				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pt-0.5 pr-3">
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {

@@ -14,6 +14,7 @@ import { ModelProviderName } from "@/lib/types/config";
 import type { VirtualKey } from "@/lib/types/governance";
 import { ModelParams } from "@/lib/types/prompts";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { cn } from "@/lib/utils";
 import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -293,7 +294,7 @@ export function SettingsPanel() {
 							</div>
 						</AccordionContent>
 					</AccordionItem>
-					{selectedPromptId && <PromptDeploymentsAccordionItem activeSection={openSection} />}
+					{IS_ENTERPRISE && selectedPromptId && <PromptDeploymentsAccordionItem activeSection={openSection} />}
 				</Accordion>
 			</div>
 		</div>

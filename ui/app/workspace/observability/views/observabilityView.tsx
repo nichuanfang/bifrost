@@ -2,6 +2,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { setSelectedPlugin, useAppDispatch, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
@@ -24,6 +25,7 @@ type SupportedPlatform = {
 	icon: React.ReactNode;
 	tag?: string;
 	disabled?: boolean;
+	enterpriseOnly?: boolean;
 };
 
 const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
@@ -57,21 +59,25 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		id: "datadog",
 		name: "Datadog",
 		icon: <img alt="Datadog" src="/images/datadog-logo.webp" width={32} height={32} className="-ml-0.5" />,
+		enterpriseOnly: true,
 	},
 	{
 		id: "bigquery",
 		name: "BigQuery",
 		icon: <img alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		enterpriseOnly: true,
 	},
 	{
 		id: "kafka",
 		name: "Kafka",
 		icon: <img alt="Kafka" src="/images/kafka-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		enterpriseOnly: true,
 	},
 	{
 		id: "pubsub",
 		name: "Pub/Sub",
 		icon: <img alt="Pub/Sub" src="/images/pubsub-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		enterpriseOnly: true,
 	},
 	{
 		id: "splunk",
@@ -85,6 +91,7 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 				className="-ml-0.5"
 			/>
 		),
+		enterpriseOnly: true,
 	},
 	{
 		id: "newrelic",
@@ -108,12 +115,19 @@ export default function ObservabilityView() {
 	const { resolvedTheme } = useTheme();
 	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
-	const supportedPlatforms = useMemo(() => supportedPlatformsList(resolvedTheme || "light"), [resolvedTheme]);
+	const supportedPlatforms = useMemo(
+		() => supportedPlatformsList(resolvedTheme || "light").filter((platform) => IS_ENTERPRISE || !platform.enterpriseOnly),
+		[resolvedTheme],
+	);
 
 	// Map UI tab IDs to actual plugin names (prometheus tab uses telemetry plugin)
 	const getPluginNameForTab = (tabId: string) => (tabId === "prometheus" ? "telemetry" : tabId);
 
 	useEffect(() => {
+		if (selectedPluginId && !supportedPlatforms.some((platform) => platform.id === selectedPluginId)) {
+			setSelectedPluginId(supportedPlatforms[0]?.id ?? null);
+			return;
+		}
 		if (!plugins || plugins.length === 0) return;
 		if (!selectedPluginId) {
 			setSelectedPluginId(supportedPlatforms[0].id);
@@ -129,7 +143,7 @@ export default function ObservabilityView() {
 			dispatch(setSelectedPlugin(plugin));
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [plugins]);
+	}, [plugins, selectedPluginId, setSelectedPluginId, supportedPlatforms]);
 
 	useEffect(() => {
 		if (selectedPluginId) {

@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage } from "@/lib/store";
 import { useListFeatureFlagsQuery, useUpdateFeatureFlagMutation } from "@/lib/store/apis/featureFlagsApi";
 import type { FeatureFlagStatus } from "@/lib/types/featureFlag";
@@ -15,7 +16,7 @@ export default function FeatureFlagsView() {
 	const { data, isLoading, isError, error } = useListFeatureFlagsQuery();
 	const [updateFeatureFlag] = useUpdateFeatureFlagMutation();
 
-	const flags = data?.flags ?? [];
+	const flags = (data?.flags ?? []).filter((flag) => IS_ENTERPRISE || !flag.enterprise_only);
 
 	async function handleToggle(flag: FeatureFlagStatus, checked: boolean) {
 		try {
