@@ -29,13 +29,14 @@ type BifrostConfig struct {
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
-	Tracer             Tracer        // Tracer for distributed tracing (nil = NoOpTracer)
-	InitialPoolSize    int           // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig    // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector   // Custom key selector function
-	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
-	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
+	Tracer             Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
+	InitialPoolSize    int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig          *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector        KeySelector     // Custom key selector function
+	KeyPoolFilter      KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
+	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
+	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog       ModelInfoProvider
 }
 
@@ -75,6 +76,7 @@ const (
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
+	Typesafe      ModelProvider = "typesafe"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -122,6 +124,7 @@ var StandardProviders = []ModelProvider{
 	Wafer,
 	GithubCopilot,
 	Databricks,
+	Typesafe,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -189,6 +192,7 @@ const (
 	ContainerFileContentRequest    RequestType = "container_file_content"
 	ContainerFileDeleteRequest     RequestType = "container_file_delete"
 	RerankRequest                  RequestType = "rerank"
+	DecisionRequest                RequestType = "decisions"
 	OCRRequest                     RequestType = "ocr"
 	CountTokensRequest             RequestType = "count_tokens"
 	CompactionRequest              RequestType = "compaction"
@@ -243,12 +247,19 @@ const (
 	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
+	BifrostContextKeyBillingNonce      BifrostContextKey = "bifrost-billing-nonce" // string (internally minted per physical HTTP request; makes the billing-idempotency key unforgeable since request-id may be caller-supplied via x-request-id. Never read from headers, never echoed to the caller - DO NOT SET THIS MANUALLY)
 
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
 	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
 	// Request context filtering takes priority over client config - context can override client exclusions.
 	MCPContextKeyIncludeClients BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
 	MCPContextKeyIncludeTools   BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
+
+	// BifrostContextKeyGovernanceDisableContentLogging is the resolved virtual key's own content-logging
+	// decision (bool): true forces content off, false forces it on for the log store, absent means inherit
+	// client.disable_content_logging. It sits between the client flag and the x-bf-disable-content-logging
+	// header in precedence. Set by the bifrost governance plugin - DO NOT SET THIS MANUALLY.
+	BifrostContextKeyGovernanceDisableContentLogging BifrostContextKey = "bifrost-governance-disable-content-logging"
 
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"               // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
@@ -293,6 +304,8 @@ const (
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                  // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
+	BifrostContextKeyRawRequestBodyTextTransformer       BifrostContextKey = "bifrost-raw-request-body-text-transformer"        // RawRequestBodyTextTransformer (set by native integrations for exact provider-managed transformations)
+	BifrostContextKeyRawResponseTextTransformer          BifrostContextKey = "bifrost-raw-response-text-transformer"            // RawResponseTextTransformer (set by native integrations that forward a native non-stream response)
 	BifrostContextKeyRawStreamTextCodec                  BifrostContextKey = "bifrost-raw-stream-text-codec"                    // RawStreamTextCodec (set by native integrations whose client response forwards provider-native stream events)
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
@@ -316,7 +329,7 @@ const (
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
-	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
+	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo, ctx.CalculateCost and ctx.CalculateCostBreakdown - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func([]PluginLogEntry) (callback to complete trace after streaming, receives transport plugin logs - set by tracing middleware)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
@@ -342,6 +355,7 @@ const (
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyBaseProviderType                    BifrostContextKey = "bifrost-base-provider-type"                       // ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY) — built-in provider backing this attempt (custom providers resolve to their BaseProviderType)
 	BifrostContextKeyDoesNotSendDoneMarker               BifrostContextKey = "bifrost-does-not-send-done-marker"                // bool (set by bifrost from custom_provider_config.does_not_send_done_marker - DO NOT SET THIS MANUALLY) — ends the SSE read loop on finish_reason instead of waiting for [DONE]
+	BifrostContextKeyWaitForUsage                        BifrostContextKey = "bifrost-wait-for-usage"                           // bool (set by bifrost from custom_provider_config.wait_for_usage - DO NOT SET THIS MANUALLY) — keeps the SSE read loop open past finish_reason until the trailing usage-only chunk arrives
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyHTTPRoute                           BifrostContextKey = "bifrost-http-route"                               // string (set by bifrost - DO NOT SET THIS MANUALLY — matched route template, set by HTTP transport; used as the low-cardinality metrics `path` label)
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
@@ -375,6 +389,7 @@ const (
 	BifrostContextKeyUserEmail                           BifrostContextKey = "bifrost-user-email"                 // string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAuthCredential                      BifrostContextKey = "bifrost-auth-credential"            // schemas.Credential (what the request authenticated by, other than a virtual key presented in a header: set by the middleware that verified it, with the kind it names and the id it verified; read once when the request context settles who the request is)
 	BifrostContextKeyMCPInboundBearer                    BifrostContextKey = "bifrost-mcp-inbound-bearer"         // string (the caller's validated identity-provider token, used as the subject of delegated token exchange; set by the upstream auth layer - DO NOT SET THIS MANUALLY. SECURITY: live credential - never log its value)
+	BifrostContextKeyMCPInboundBearerOmitted             BifrostContextKey = "bifrost-mcp-inbound-bearer-omitted" // MCPInboundBearerOmittedReason (why a request that presented an identity-provider token carries no delegated-exchange subject; set by the upstream auth layer - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyQueryScope                          BifrostContextKey = "bifrost-query-scope"                // configstore.QueryScope (func that mutates a query; set by upstream wrapper - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyDimensionScope                      BifrostContextKey = "bifrost-dimension-scope"            // queryscope.DimensionScope (bounds the VALUES of a grouping dimension; set by upstream wrapper - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVisibilityFilterProvider            BifrostContextKey = "bifrost-visibility-filter-provider" // DEPRECATED: replaced by BifrostContextKeyQueryScope. Will be removed once all callers migrate.
@@ -408,8 +423,10 @@ const (
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
+	BifrostContextKeySessionAffinity                     BifrostContextKey = "bifrost-session-affinity"                   // bool: whether the request lets its session decide where it goes (default true)
 	BifrostContextKeyMCPExtraHeaders                     BifrostContextKey = "bifrost-mcp-extra-headers"                  // map[string][]string (these headers are forwarded only to the MCP while tool execution if they are in the allowlist of the MCP client)
 	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                         // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyMCPUnattendedExecution              BifrostContextKey = "bifrost-mcp-unattended-execution"           // bool (set by the agent executor - DO NOT SET THIS MANUALLY) - true when a tool call runs without human approval, so Code Mode enforces tools_to_auto_execute on every nested call
 	BifrostContextKeyMCPHealthCheckRequest               BifrostContextKey = "bifrost-mcp-health-check-request"           // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true when the MCP connect/ping/list-tools request was generated by bifrost itself (periodic health checks, or the admin connection-verification probe) rather than originating from a caller
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"        // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
@@ -466,6 +483,11 @@ const (
 	RoutingEngineLoadbalancing  = "loadbalancing"
 	RoutingEngineModelCatalog   = "model-catalog"
 	RoutingEngineCircuitBreaker = "circuit-breaker"
+	// RoutingEngineSessionAffinity marks decisions a session made for the request:
+	// staying on the provider or key that served it before, ahead of what the
+	// routing engines proposed. Recorded so the request's trail says why it went
+	// where it went.
+	RoutingEngineSessionAffinity = "session-affinity"
 	// RoutingEngineCore represents the Bifrost core orchestrator's own
 	// routing decisions — primarily fallback transitions. Emitted when the
 	// primary attempt fails and core advances through the fallback chain so
@@ -477,10 +499,23 @@ const (
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
 //
-// FailReason is populated on every failed attempt (retryable or terminal) and is nil only on a
-// successful attempt. Status-derived values are: `rate_limit_error` (429), `authentication_error`
-// (401/403), `billing_error` (402); otherwise the provider's error Type is used, falling back to
-// `unknown`. Use it to inspect what went wrong on a given try.
+// FailureClass and StatusCode are set on every failed attempt the provider answered (retryable or
+// terminal) and are empty on a successful attempt, on a cancelled one, and on an internal Bifrost
+// error. FailureClass is what the retry loop acted on; StatusCode is the raw status it was derived
+// from, kept so a consumer can tell a 401 from a 403 within the same class.
+//
+// FailReason is populated on the same attempts and is nil on the others. For the classes that
+// name what the provider refused it is the class's label: `rate_limit_error`, `authentication_error`,
+// `billing_error`, `model_access_error`, `model_retired_error`, `region_blocked_error`; otherwise the
+// provider's error Type is used, falling back to `unknown`. Use it to inspect what went wrong on a
+// given try.
+//
+// RetryAfter is the provider's own hint for how long to wait before trying this key again, in
+// milliseconds, carried from the error's ExtraFields.RetryAfter (see the retry hint sources in
+// providers/utils). It is zero when the provider gave none, which is most failures: only a
+// Retry-After or retry-after-ms header, or a google.rpc.RetryInfo error detail, produces one.
+// Kept per attempt because a request that rotated away from a rate-limited key still knows how
+// long that key asked for, which the request's final error no longer says.
 //
 // TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
 // rotate to a *different* key. It is false on:
@@ -492,11 +527,14 @@ const (
 //
 // Use this (not FailReason) to count actual key rotations.
 type KeyAttemptRecord struct {
-	Attempt           int     `json:"attempt"`
-	KeyID             string  `json:"key_id"`
-	KeyName           string  `json:"key_name"`
-	FailReason        *string `json:"fail_reason,omitempty"`
-	TriggeredRotation bool    `json:"triggered_rotation"`
+	Attempt           int          `json:"attempt"`
+	KeyID             string       `json:"key_id"`
+	KeyName           string       `json:"key_name"`
+	FailReason        *string      `json:"fail_reason,omitempty"`
+	FailureClass      FailureClass `json:"failure_class,omitempty"`
+	StatusCode        *int         `json:"status_code,omitempty"`
+	RetryAfter        int64        `json:"retry_after_ms,omitempty"`
+	TriggeredRotation bool         `json:"triggered_rotation"`
 }
 
 // RoutingEngineLogEntry represents a log entry from a routing engine
@@ -540,6 +578,7 @@ type LargePayloadMetadata struct {
 	SpeechConfig       bool     // true if generationConfig.speechConfig is present
 	Model              string   // model extracted without full body parsing (openai/anthropic multipart/json)
 	StreamRequested    *bool    // stream flag when available in request payload metadata
+	ThreadType         string   // Anthropic thread.type ("create"/"continue") when detected during metadata extraction; empty when absent or unknown. Lets the stateless thread refusal work when body parsing is skipped
 }
 
 //* Request Structs
@@ -548,6 +587,7 @@ type LargePayloadMetadata struct {
 type Fallback struct {
 	Provider ModelProvider `json:"provider"`
 	Model    string        `json:"model"`
+	KeyID    string        `json:"key_id,omitempty"` // pins a provider key for this attempt; empty means normal key selection
 }
 
 // BifrostRequest is the request struct for all bifrost requests.
@@ -578,6 +618,7 @@ type BifrostRequest struct {
 	CompactionRequest            *BifrostCompactionRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
 	RerankRequest                *BifrostRerankRequest
+	DecisionRequest              *BifrostDecisionRequest
 	OCRRequest                   *BifrostOCRRequest
 	SpeechRequest                *BifrostSpeechRequest
 	TranscriptionRequest         *BifrostTranscriptionRequest
@@ -646,6 +687,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
 	case br.RerankRequest != nil:
 		return br.RerankRequest.Provider, br.RerankRequest.Model, br.RerankRequest.Fallbacks
+	case br.DecisionRequest != nil:
+		return br.DecisionRequest.Provider, br.DecisionRequest.Model, br.DecisionRequest.Fallbacks
 	case br.OCRRequest != nil:
 		return br.OCRRequest.Provider, br.OCRRequest.Model, br.OCRRequest.Fallbacks
 	case br.SpeechRequest != nil:
@@ -799,6 +842,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.EmbeddingRequest.Provider = provider
 	case br.RerankRequest != nil:
 		br.RerankRequest.Provider = provider
+	case br.DecisionRequest != nil:
+		br.DecisionRequest.Provider = provider
 	case br.OCRRequest != nil:
 		br.OCRRequest.Provider = provider
 	case br.SpeechRequest != nil:
@@ -854,6 +899,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.EmbeddingRequest.Model = model
 	case br.RerankRequest != nil:
 		br.RerankRequest.Model = model
+	case br.DecisionRequest != nil:
+		br.DecisionRequest.Model = model
 	case br.OCRRequest != nil:
 		br.OCRRequest.Model = model
 	case br.SpeechRequest != nil:
@@ -911,6 +958,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.EmbeddingRequest.Fallbacks = fallbacks
 	case br.RerankRequest != nil:
 		br.RerankRequest.Fallbacks = fallbacks
+	case br.DecisionRequest != nil:
+		br.DecisionRequest.Fallbacks = fallbacks
 	case br.OCRRequest != nil:
 		br.OCRRequest.Fallbacks = fallbacks
 	case br.SpeechRequest != nil:
@@ -954,6 +1003,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.RerankRequest != nil:
 		br.RerankRequest.RawRequestBody = rawRequestBody
+	case br.DecisionRequest != nil:
+		br.DecisionRequest.RawRequestBody = rawRequestBody
 	case br.OCRRequest != nil:
 		br.OCRRequest.RawRequestBody = rawRequestBody
 	case br.SpeechRequest != nil:
@@ -1129,6 +1180,7 @@ type BifrostResponse struct {
 	CompactionResponse            *BifrostCompactionResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
 	RerankResponse                *BifrostRerankResponse
+	DecisionResponse              *BifrostDecisionResponse
 	OCRResponse                   *BifrostOCRResponse
 	SpeechResponse                *BifrostSpeechResponse
 	SpeechStreamResponse          *BifrostSpeechStreamResponse
@@ -1192,6 +1244,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.EmbeddingResponse.ExtraFields
 	case r.RerankResponse != nil:
 		return &r.RerankResponse.ExtraFields
+	case r.DecisionResponse != nil:
+		return &r.DecisionResponse.ExtraFields
 	case r.OCRResponse != nil:
 		return &r.OCRResponse.ExtraFields
 	case r.SpeechResponse != nil:
@@ -1460,6 +1514,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.RerankResponse.ExtraFields.Provider = provider
 		r.RerankResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.RerankResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.DecisionResponse != nil:
+		r.DecisionResponse.ExtraFields.RequestType = requestType
+		r.DecisionResponse.ExtraFields.Provider = provider
+		r.DecisionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.DecisionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.SpeechResponse != nil:
 		r.SpeechResponse.ExtraFields.RequestType = requestType
 		r.SpeechResponse.ExtraFields.Provider = provider
@@ -1903,13 +1962,6 @@ type BifrostRoutingCall struct {
 	CountTowardBudgets bool `json:"count_toward_budgets,omitempty"`
 }
 
-const (
-	RequestCancelled         = "request_cancelled"
-	RequestTimedOut          = "request_timed_out"
-	RequestDropped           = "request_dropped"
-	ProviderConnectionFailed = "provider_connection_failed"
-)
-
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
 // Either BifrostResponse or BifrostError will be non-nil.
 type BifrostStreamChunk struct {
@@ -2128,7 +2180,8 @@ type BifrostErrorExtraFields struct {
 	RawResponse               interface{}           `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
-	Latency                   int64                 `json:"latency,omitempty"` // in milliseconds
+	Latency                   int64                 `json:"latency,omitempty"`        // in milliseconds
+	RetryAfter                int64                 `json:"retry_after_ms,omitempty"` // provider's retry hint in milliseconds, clamped to 1s..5m; zero when it gave none
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 	// BilledUsage carries provider-reported token usage that was consumed even
@@ -2139,4 +2192,11 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
+
+	// ErrorType is this failure's normalized classification, declared by whoever
+	// produced the error. ClassifyErrorType returns it verbatim when set and infers
+	// only when it is not, so a refusal that forgets to declare lands in
+	// ErrorTypeOther rather than in a wrong bucket. Empty is normal for provider
+	// errors, which are still inferred.
+	ErrorType ErrorType `json:"error_type,omitempty"`
 }

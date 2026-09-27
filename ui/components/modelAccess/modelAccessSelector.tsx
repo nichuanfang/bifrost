@@ -1,21 +1,27 @@
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
-import { addPattern, type ModelAccessMode, modelAccessPlaceholder, resolveWildcardSelection } from "./utils";
+import {
+	addPattern,
+	MODEL_WILDCARD,
+	type ModelAccessMode,
+	modelAccessPlaceholder,
+	removePattern,
+	replaceModels,
+	splitModelAccess,
+	toRegexEntry,
+} from "./utils";
 
 type EditorTab = "models" | "regex";
 
 export interface ModelAccessSelectorProps {
-	/** The exact list: model names, or "*" alone for every model. */
+	/** The list: model names, "*" alone for every model, and `regex:` entries for patterns. */
 	value: string[];
 	onChange: (next: string[]) => void;
-	/** The pattern twin of `value`: raw RE2 patterns. */
-	patterns: string[];
-	onPatternsChange: (next: string[]) => void;
 	/** "allow" for allowed_models / models, "block" for blacklisted_models. Drives placeholders. */
 	mode: ModelAccessMode;
 	provider?: string;
@@ -25,7 +31,6 @@ export interface ModelAccessSelectorProps {
 	allowAllOption?: boolean;
 	/** Bypass governance filtering when loading suggestions (provider key form). */
 	unfiltered?: boolean;
-	loadModelsOnEmptyProvider?: boolean | "base_models";
 	disabled?: boolean;
 	/**
 	 * Optional label row content. When given, the Models | Regex toggle is
@@ -38,33 +43,26 @@ export interface ModelAccessSelectorProps {
 	id?: string;
 	"aria-describedby"?: string;
 	"aria-invalid"?: boolean;
-	menuPosition?: "absolute" | "fixed";
-	menuPortalTarget?: HTMLElement | null;
 	className?: string;
 }
 
 /**
  * The one editor for a model allow or block side. A small toggle switches
- * between picking concrete models (the multiselect everyone used before), which
- * edits the exact list, and adding regex patterns, which edits the pattern
- * list. The two lists are separate fields on the wire and stay separate here.
+ * between picking concrete models (the multiselect everyone used before) and
+ * adding regex patterns. Both views edit the same list: patterns are stored as
+ * `regex:` entries next to the names.
  */
 export function ModelAccessSelector({
 	value,
 	onChange,
-	patterns,
-	onPatternsChange,
 	mode,
 	provider,
 	keys,
 	allowAllOption = true,
 	unfiltered,
-	loadModelsOnEmptyProvider,
 	disabled,
 	label,
 	inputId,
-	menuPosition,
-	menuPortalTarget,
 	className,
 	...rest
 }: ModelAccessSelectorProps) {
@@ -75,17 +73,15 @@ export function ModelAccessSelector({
 	const describedBy = rest["aria-describedby"];
 	const invalid = rest["aria-invalid"];
 	const list = value ?? [];
-	const patternList = patterns ?? [];
+	const { models, patterns } = splitModelAccess(list);
 	// Until the user picks a view, follow what is configured, so a patterns-only rule is
 	// visible right away instead of hidden behind the toggle. Deriving rather than storing
 	// it keeps that true for values that arrive after mount, which is the normal case for a
 	// form that loads its record asynchronously and resets afterwards. Once the user picks a
 	// view it is theirs, and nothing moves it again.
 	const [pickedTab, setPickedTab] = useState<EditorTab | null>(null);
-	const tab: EditorTab = pickedTab ?? (patternList.length > 0 && list.length === 0 ? "regex" : "models");
-	const hasWildcard = list.includes("*");
-
-	const removePattern = (pattern: string) => onPatternsChange(patternList.filter((p) => p !== pattern));
+	const tab: EditorTab = pickedTab ?? (patterns.length > 0 && models.length === 0 ? "regex" : "models");
+	const hasWildcard = models.includes("*");
 
 	const toggle = (
 		<Tabs value={tab} onValueChange={(next) => setPickedTab(next as EditorTab)} className="shrink-0">
@@ -118,9 +114,10 @@ export function ModelAccessSelector({
 			</div>
 
 			{tab === "models" ? (
-				<ModelMultiselect
-					allowAllOption={allowAllOption}
-					hideSearchIcon
+				<ModelSelector
+					multiple
+					extraOptions={allowAllOption ? ALL_MODELS_OPTION : undefined}
+					allowCustomModel
 					data-testid={testId}
 					inputId={controlId}
 					ariaDescribedBy={describedBy}
@@ -128,14 +125,12 @@ export function ModelAccessSelector({
 					provider={provider}
 					keys={keys}
 					unfiltered={unfiltered}
-					loadModelsOnEmptyProvider={loadModelsOnEmptyProvider}
-					disabled={disabled}
-					menuPosition={menuPosition}
-					menuPortalTarget={menuPortalTarget}
-					value={hasWildcard ? ["*"] : list}
-					onChange={(models: string[]) => onChange(resolveWildcardSelection(list, models))}
-					placeholder={modelAccessPlaceholder(list, mode, patternList)}
-					renderValueLabel={(option) => <ModelAccessChipLabel entry={option.value} />}
+					disabled={disabled || !provider}
+					value={hasWildcard ? [MODEL_WILDCARD] : models}
+					onChange={(next: string[]) => onChange(replaceModels(list, next))}
+					placeholder={modelAccessPlaceholder(list, mode)}
+					emptyMessage={provider ? "No models available for this provider." : "Select a provider first."}
+					renderValueLabel={(entry) => <ModelAccessChipLabel entry={entry} />}
 				/>
 			) : (
 				<div className="space-y-1.5">
@@ -145,21 +140,21 @@ export function ModelAccessSelector({
 						ariaDescribedBy={describedBy}
 						ariaInvalid={invalid}
 						disabled={disabled}
-						onAdd={(pattern) => onPatternsChange(addPattern(patternList, pattern))}
+						onAdd={(pattern) => onChange(addPattern(list, pattern))}
 					/>
-					{patternList.length > 0 ? (
+					{patterns.length > 0 ? (
 						<div className="flex flex-wrap gap-1" data-testid={testId ? `${testId}-entries` : undefined}>
-							{patternList.map((pattern) => (
+							{patterns.map((pattern) => (
 								<span
 									key={pattern}
 									className="bg-accent inline-flex max-w-full items-center gap-1 rounded-sm px-1.5 py-0.5 font-mono text-sm"
 								>
-									<ModelAccessChipLabel entry={pattern} kind="pattern" />
+									<ModelAccessChipLabel entry={toRegexEntry(pattern)} />
 									<button
 										type="button"
 										aria-label={`Remove ${pattern}`}
 										disabled={disabled}
-										onClick={() => removePattern(pattern)}
+										onClick={() => onChange(removePattern(list, pattern))}
 										className="text-muted-foreground hover:text-foreground shrink-0"
 									>
 										<X className="h-3.5 w-3.5" />
@@ -169,7 +164,9 @@ export function ModelAccessSelector({
 						</div>
 					) : (
 						<p className="text-muted-foreground text-xs">
-							{mode === "allow" ? "No patterns. Add an RE2 pattern to allow models by name shape." : "No patterns. Add an RE2 pattern to block models by name shape."}
+							{mode === "allow"
+								? "No patterns. Add an RE2 pattern to allow models by name shape."
+								: "No patterns. Add an RE2 pattern to block models by name shape."}
 						</p>
 					)}
 				</div>

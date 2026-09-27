@@ -120,7 +120,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
-	response := elevenlabsResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.ModelAccess(), key.Aliases, request.Unfiltered)
+	response := elevenlabsResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
@@ -331,6 +331,11 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 // Rerank is not supported by the Elevenlabs provider.
 func (provider *ElevenlabsProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Elevenlabs provider.

@@ -287,7 +287,7 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// Convert Cohere v2 response to Bifrost response
-	response := cohereResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.ModelAccess(), key.Aliases, request.Unfiltered)
+	response := cohereResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
@@ -1064,6 +1064,11 @@ func (provider *CohereProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	}
 
 	return bifrostResponse, nil
+}
+
+// Decision is not supported by the Cohere provider.
+func (provider *CohereProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Cohere provider.

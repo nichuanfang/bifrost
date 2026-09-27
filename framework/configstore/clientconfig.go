@@ -543,14 +543,12 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			blacklistedModels = []string{} // Match models: empty JSON array, not null
 		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:                        key.ID,
-			Name:                      key.Name,
-			Models:                    models,
-			BlacklistedModels:         blacklistedModels,
-			ModelsPatterns:            key.ModelsPatterns,
-			BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
-			Weight:                    key.Weight,
-			ConfigHash:                key.ConfigHash,
+			ID:                key.ID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklistedModels,
+			Weight:            key.Weight,
+			ConfigHash:        key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -869,29 +867,6 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		hash.Write([]byte("blacklistedModels:"))
 		hash.Write(data)
 	}
-	// Hash the pattern twins only when set, so keys without patterns keep their hash.
-	if len(key.ModelsPatterns) > 0 {
-		sortedPatterns := make([]string, len(key.ModelsPatterns))
-		copy(sortedPatterns, key.ModelsPatterns)
-		sort.Strings(sortedPatterns)
-		data, err := sonic.Marshal(sortedPatterns)
-		if err != nil {
-			return "", err
-		}
-		hash.Write([]byte("modelsPatterns:"))
-		hash.Write(data)
-	}
-	if len(key.BlacklistedModelsPatterns) > 0 {
-		sortedPatterns := make([]string, len(key.BlacklistedModelsPatterns))
-		copy(sortedPatterns, key.BlacklistedModelsPatterns)
-		sort.Strings(sortedPatterns)
-		data, err := sonic.Marshal(sortedPatterns)
-		if err != nil {
-			return "", err
-		}
-		hash.Write([]byte("blacklistedModelsPatterns:"))
-		hash.Write(data)
-	}
 	// Hash Weight
 	data, err := sonic.Marshal(key.Weight)
 	if err != nil {
@@ -1030,12 +1005,9 @@ type VirtualKeyProviderConfigHashInput struct {
 	Weight            *float64
 	AllowedModels     []string
 	BlacklistedModels []string
-	// Pattern twins, omitted from the hash when empty so existing hashes hold.
-	AllowedModelsPatterns     []string `json:",omitempty"`
-	BlacklistedModelsPatterns []string `json:",omitempty"`
-	AllowAllKeys              bool
-	RateLimitID               *string
-	KeyIDs                    []string // Only key IDs, not full key objects
+	AllowAllKeys      bool
+	RateLimitID       *string
+	KeyIDs            []string // Only key IDs, not full key objects
 }
 
 // VirtualKeyMCPConfigHashInput represents MCP config fields for hashing
@@ -1068,6 +1040,17 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	} else {
 		hash.Write([]byte("allowAllProviders:false"))
 	}
+	// Hash DisableContentLogging only when the key says something. Nil is inherit, and writing
+	// nothing for it keeps every key that predates the column on the hash it already has, so
+	// config sync sees no drift on upgrade (the unconditional AllowAllProviders write above is
+	// what forced a backfill migration).
+	if vk.DisableContentLogging != nil {
+		if *vk.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
@@ -1079,6 +1062,11 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash CustomerID
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
+	}
+	// Hash BusinessUnitID. Written only when set, like the owners above, so every key that
+	// predates business-unit ownership keeps the hash it already has and config sync sees no drift.
+	if vk.BusinessUnitID != nil {
+		hash.Write([]byte("businessUnitID:" + *vk.BusinessUnitID))
 	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
@@ -1131,26 +1119,14 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sortedBlacklistedModels := make([]string, len(pc.BlacklistedModels))
 			copy(sortedBlacklistedModels, pc.BlacklistedModels)
 			sort.Strings(sortedBlacklistedModels)
-
-			var sortedAllowedPatterns, sortedBlacklistedPatterns []string
-			if len(pc.AllowedModelsPatterns) > 0 {
-				sortedAllowedPatterns = append([]string(nil), pc.AllowedModelsPatterns...)
-				sort.Strings(sortedAllowedPatterns)
-			}
-			if len(pc.BlacklistedModelsPatterns) > 0 {
-				sortedBlacklistedPatterns = append([]string(nil), pc.BlacklistedModelsPatterns...)
-				sort.Strings(sortedBlacklistedPatterns)
-			}
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
-				Provider:                  pc.Provider,
-				Weight:                    pc.Weight,
-				AllowedModels:             sortedAllowedModels,
-				BlacklistedModels:         sortedBlacklistedModels,
-				AllowedModelsPatterns:     sortedAllowedPatterns,
-				BlacklistedModelsPatterns: sortedBlacklistedPatterns,
-				AllowAllKeys:              pc.AllowAllKeys,
-				RateLimitID:               pc.RateLimitID,
-				KeyIDs:                    keyIDs,
+				Provider:          pc.Provider,
+				Weight:            pc.Weight,
+				AllowedModels:     sortedAllowedModels,
+				BlacklistedModels: sortedBlacklistedModels,
+				AllowAllKeys:      pc.AllowAllKeys,
+				RateLimitID:       pc.RateLimitID,
+				KeyIDs:            keyIDs,
 			}
 		}
 		data, err := sonic.Marshal(providerConfigsForHash)

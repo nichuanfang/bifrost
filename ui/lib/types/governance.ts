@@ -114,8 +114,15 @@ export interface VirtualKey {
 	calendar_aligned?: boolean;
 	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
 	allow_all_providers?: boolean;
+	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
+	// this key's traffic, false forces it on for the log store.
+	disable_content_logging?: boolean | null;
 	created_at: string;
 	updated_at: string;
+	// The third owner a key can have, alongside a team and a customer. Carried as an id only:
+	// business units are an enterprise table this model does not preload, so there is no
+	// `business_unit` relation to read a name from.
+	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
@@ -125,6 +132,11 @@ export interface VirtualKey {
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
 	is_access_profile_managed?: boolean;
+	// Read-only, server-computed: the user this key is assigned to, or null when it
+	// is assigned to a team, a customer, or nothing. Absent (rather than null) when
+	// the response came from a path that does not resolve assignees, so callers can
+	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
+	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -141,10 +153,6 @@ export interface VirtualKeyProviderConfig {
 	weight: number | null;
 	allowed_models: string[];
 	blacklisted_models: string[];
-	/** RE2 patterns admitting models by name shape, alongside allowed_models. */
-	allowed_models_patterns?: string[];
-	/** RE2 patterns blocking models by name shape; win over the allow side. */
-	blacklisted_models_patterns?: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
@@ -199,8 +207,6 @@ export interface VirtualKeyProviderConfigRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	blacklisted_models?: string[];
-	allowed_models_patterns?: string[];
-	blacklisted_models_patterns?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	model_budgets?: VirtualKeyModelBudgetRequest[];
@@ -213,8 +219,6 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	blacklisted_models?: string[];
-	allowed_models_patterns?: string[];
-	blacklisted_models_patterns?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	model_budgets?: VirtualKeyModelBudgetRequest[]; // Full desired per-model set when provider_configs is supplied
@@ -229,12 +233,15 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
+	business_unit_id?: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
+	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -244,6 +251,8 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string | null;
 	customer_id?: string | null;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
+	business_unit_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
@@ -251,6 +260,7 @@ export interface UpdateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -339,6 +349,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only owner kind; a key names at most one owner, so this ORs with the other two. */
+	business_unit_id?: string;
 	/** Enterprise-only: filters to virtual keys assigned to this user. */
 	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;

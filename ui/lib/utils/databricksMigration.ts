@@ -158,8 +158,6 @@ export interface PlannedKey {
 	needsValue: boolean;
 	models: string[];
 	blacklisted_models: string[];
-	models_patterns: string[];
-	blacklisted_models_patterns: string[];
 	weight: number;
 	enabled: boolean;
 	aliases?: Record<string, AliasConfig>;
@@ -216,11 +214,13 @@ const buildProviderSettings = (source: ModelProvider, warnings: string[]): Updat
 		const extra_headers = stripAuthorizationHeader(net.extra_headers);
 		if (extra_headers) network_config.extra_headers = extra_headers;
 		if (net.insecure_skip_verify !== undefined) network_config.insecure_skip_verify = net.insecure_skip_verify;
-		if (net.stream_idle_timeout_in_seconds !== undefined) network_config.stream_idle_timeout_in_seconds = net.stream_idle_timeout_in_seconds;
+		if (net.stream_idle_timeout_in_seconds !== undefined)
+			network_config.stream_idle_timeout_in_seconds = net.stream_idle_timeout_in_seconds;
 		if (net.keep_alive_timeout_in_seconds !== undefined) network_config.keep_alive_timeout_in_seconds = net.keep_alive_timeout_in_seconds;
 		if (net.max_conns_per_host !== undefined) network_config.max_conns_per_host = net.max_conns_per_host;
 		if (net.enforce_http2 !== undefined) network_config.enforce_http2 = net.enforce_http2;
-		if (net.http2_ping_interval_in_seconds !== undefined) network_config.http2_ping_interval_in_seconds = net.http2_ping_interval_in_seconds;
+		if (net.http2_ping_interval_in_seconds !== undefined)
+			network_config.http2_ping_interval_in_seconds = net.http2_ping_interval_in_seconds;
 		if (net.beta_header_overrides !== undefined) network_config.beta_header_overrides = net.beta_header_overrides;
 		if (net.allow_private_network !== undefined) network_config.allow_private_network = net.allow_private_network;
 		const caCert = portableSecret(net.ca_cert_pem, "The provider CA certificate", warnings);
@@ -310,8 +310,6 @@ export const buildDatabricksMigrationPlan = (
 			needsValue: !auth.token,
 			models: ["*"],
 			blacklisted_models: [],
-			models_patterns: [],
-			blacklisted_models_patterns: [],
 			weight: 1,
 			enabled: true,
 		});
@@ -332,8 +330,6 @@ export const buildDatabricksMigrationPlan = (
 				needsValue: !value,
 				models: key.models ?? ["*"],
 				blacklisted_models: key.blacklisted_models ?? [],
-				models_patterns: key.models_patterns ?? [],
-				blacklisted_models_patterns: key.blacklisted_models_patterns ?? [],
 				weight: key.weight ?? 1,
 				enabled: key.enabled ?? true,
 				aliases: normalizeAliases(key.aliases),
@@ -398,8 +394,6 @@ export const toDatabricksKeyPayload = (plan: MigrationPlan, key: PlannedKey): Mo
 	value: key.value,
 	models: key.models,
 	blacklisted_models: key.blacklisted_models,
-	models_patterns: key.models_patterns,
-	blacklisted_models_patterns: key.blacklisted_models_patterns,
 	weight: key.weight,
 	enabled: key.enabled,
 	aliases: key.aliases,

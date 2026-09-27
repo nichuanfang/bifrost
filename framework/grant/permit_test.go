@@ -388,61 +388,29 @@ func TestAllowsTool(t *testing.T) {
 	})
 }
 
-// A refusal is read by whoever made the request, so no kind this package declares may render as a
-// machine identifier. The switch translates the ones whose value does not read as prose; the rest
-// fall through to their own value, which is fine only while that value is a word.
+// A refusal names the permit kind in words rather than by identifier - "your team's access profile",
+// not "team_access_profile" - so every kind declared here is named here.
 //
-// The assertion that carries this is the underscore one: it is what fails if a kind is declared
-// with an underscored value and nobody adds it to the switch, which is the way this actually goes
-// wrong.
-func TestPermitTypePrettyStringNeverRendersAnIdentifier(t *testing.T) {
+// The assertion that carries this is the underscore one: it fails as soon as a kind is added with an
+// underscored value and no case in PrettyString.
+func TestPermitTypePrettyStringNamesEveryKind(t *testing.T) {
 	for _, tc := range []struct {
 		kind PermitType
 		want string
 	}{
 		{PermitVirtualKey, "virtual key"},
 		{PermitAccessProfile, "access profile"},
-		// Served by the default, because "project" is already the word a refusal should say.
+		{PermitTeamAccessProfile, "team access profile"},
+		{PermitBusinessUnitAccessProfile, "business unit access profile"},
+		{PermitCustomerAccessProfile, "customer access profile"},
+		// Unlabelled on purpose: "project" is already the word a refusal should say.
 		{PermitProject, "project"},
 	} {
 		assert.Equal(t, tc.want, tc.kind.PrettyString())
 		assert.NotContains(t, tc.kind.PrettyString(), "_", "a refusal must not read as an identifier")
 	}
 
-	// A kind nobody declared still renders, because a refusal that loses its subject cannot be
-	// acted on at all.
+	// A kind with no case of its own still renders: a refusal that loses its subject cannot be acted
+	// on at all, so the identifier is better than nothing.
 	assert.Equal(t, "something_else", PermitType("something_else").PrettyString())
-}
-
-// TestProviderPermitAllowsModelPatterns covers the pattern twins of a provider permit's allow and
-// block lists: a pattern admits a family, a blocking pattern wins over an allowing one, a
-// provider-qualified pattern only applies to its own provider, and a regex-looking string in the
-// exact list is a literal.
-func TestProviderPermitAllowsModelPatterns(t *testing.T) {
-	family := &schemas.ProviderPermit{Provider: "openai", AllowedModelsPatterns: []string{"^gpt-4.*"}, BlacklistedModelsPatterns: []string{".*-preview$"}}
-	assert.True(t, providerPermitAllowsModel(family, "gpt-4o"))
-	assert.True(t, providerPermitAllowsModel(family, "GPT-4o-mini"), "patterns match case-insensitively")
-	assert.False(t, providerPermitAllowsModel(family, "gpt-4o-preview"), "the block pattern wins over the allow pattern")
-	assert.False(t, providerPermitAllowsModel(family, "o3"))
-	exact := &schemas.ProviderPermit{Provider: "openai", AllowedModelsPatterns: []string{"gpt-4"}}
-	assert.True(t, providerPermitAllowsModel(exact, "gpt-4"))
-	assert.False(t, providerPermitAllowsModel(exact, "gpt-4o"), "a pattern is a full match, not a prefix")
-
-	qualified := &schemas.ProviderPermit{Provider: "azure", AllowedModelsPatterns: []string{"azure/gpt-.*"}}
-	assert.True(t, providerPermitAllowsModel(qualified, "gpt-4o"), "a provider-qualified pattern is tried against provider/model")
-	other := &schemas.ProviderPermit{Provider: "openai", AllowedModelsPatterns: []string{"azure/gpt-.*"}}
-	assert.False(t, providerPermitAllowsModel(other, "gpt-4o"), "a pattern naming another provider does not apply here")
-
-	literal := &schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"regex:^gpt-4.*"}}
-	assert.False(t, providerPermitAllowsModel(literal, "gpt-4o"), "a regex-looking exact entry is not evaluated")
-	assert.True(t, providerPermitAllowsModel(literal, "regex:^gpt-4.*"), "a regex-looking exact entry matches itself")
-
-	p := newPermit(permitSpec{
-		Type: PermitVirtualKey, ID: "vk-1", Name: "vk", IsActive: true,
-		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"gpt-3.5-turbo"}, AllowedModelsPatterns: []string{"^gpt-4.*"}, BlacklistedModelsPatterns: []string{".*-preview$"}}},
-	})
-	assert.True(t, allowsModelByName(p, "openai", "gpt-4o"))
-	assert.True(t, allowsModelByName(p, "openai", "gpt-3.5-turbo"), "the exact list still admits alongside patterns")
-	assert.False(t, allowsModelByName(p, "openai", "gpt-4o-preview"))
-	assert.True(t, blacklistsModel(p, "openai", "gpt-4o-preview"))
 }

@@ -18,6 +18,7 @@ import yaml
 
 
 HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent.parent
 ENTRY = HERE / "openapi.yaml"
 PATHS_DIR = HERE / "paths" / "management"
 
@@ -317,193 +318,359 @@ def test_virtual_key_request_contract_is_current():
     assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
 
 
-def test_model_access_fields_are_documented_consistently():
-    """The three Virtual Key provider-config schemas describe model access identically.
 
-    A response schema and its create/update request twins are read side by side, and the
-    allow/deny contract is asymmetric enough to be worth stating in full on each: an empty
-    allowlist denies every model, an empty denylist blocks none. Wording that drifts
-    between the three reads as three different rules.
-    """
-    source = load(HERE / "schemas" / "management" / "governance.yaml")
-    fields = (
-        "allowed_models",
-        "blacklisted_models",
-        "allowed_models_patterns",
-        "blacklisted_models_patterns",
-    )
-    blocks = {
-        "VirtualKeyProviderConfig": source["VirtualKeyProviderConfig"]["properties"],
-        "CreateVirtualKeyRequest": source["CreateVirtualKeyRequest"]["properties"][
-            "provider_configs"
-        ]["items"]["properties"],
-        "UpdateVirtualKeyRequest": source["UpdateVirtualKeyRequest"]["properties"][
-            "provider_configs"
-        ]["items"]["properties"],
-    }
+def test_warp_credential_contract_is_current():
+    """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
+    There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
+    step and no omitted-versus-empty rule. `base_url` overrides the provider's default
+    endpoint; it does not default to this Bifrost's own origin. Guard the modular source
+    and the published bundle against prose that still describes the abandoned design."""
+    import json
 
-    def normalize(text: str) -> str:
-        return " ".join(text.split())
-
-    problems = []
-    for field in fields:
-        seen = {}
-        for name, properties in blocks.items():
-            if field not in properties:
-                problems.append(f"{name}: {field} is not declared")
-                continue
-            seen.setdefault(normalize(properties[field].get("description", "")), []).append(name)
-        if len(seen) > 1:
-            wordings = "; ".join(f"{sorted(names)}: {text!r}" for text, names in seen.items())
-            problems.append(f"{field} is described differently across the three schemas: {wordings}")
-
-    # The allowlist already states what an empty list means and that `*` cannot be
-    # mixed with names. The denylist is the half readers get wrong, and BlackList.Validate
-    # enforces the same wildcard rule on it, so it has to say both too.
-    for name, properties in blocks.items():
-        denylist = normalize(properties.get("blacklisted_models", {}).get("description", ""))
-        if "empty list blocks no models" not in denylist:
-            problems.append(
-                f"{name}: blacklisted_models does not state that an empty list blocks no models"
-            )
-        if "may not mix" not in denylist:
-            problems.append(
-                f"{name}: blacklisted_models does not state that `*` may not be mixed with named entries"
-            )
-
-    assert not problems, "model access documentation drift:\n    " + "\n    ".join(problems)
-
-
-# Every model-pattern declaration across the management schemas, as (file, schema, field).
-# The published API applies one pattern contract; a reader landing on any one of these
-# should not have to find another to learn the rest of it.
-PATTERN_DECLARATIONS = (
-    ("governance.yaml", "VirtualKeyProviderConfig", "allowed_models_patterns"),
-    ("governance.yaml", "VirtualKeyProviderConfig", "blacklisted_models_patterns"),
-    ("governance.yaml", "CreateVirtualKeyRequest", "allowed_models_patterns"),
-    ("governance.yaml", "CreateVirtualKeyRequest", "blacklisted_models_patterns"),
-    ("governance.yaml", "UpdateVirtualKeyRequest", "allowed_models_patterns"),
-    ("governance.yaml", "UpdateVirtualKeyRequest", "blacklisted_models_patterns"),
-    ("projects.yaml", "ProjectProviderConfig", "allowed_models_patterns"),
-    ("projects.yaml", "ProjectProviderConfig", "blacklisted_models_patterns"),
-    ("providers.yaml", "Key", "models_patterns"),
-    ("providers.yaml", "Key", "blacklisted_models_patterns"),
-)
-
-
-def pattern_property(source, schema_name, field, components=None):
-    """Return one pattern declaration, reaching through a provider_configs array when present.
-
-    `components` resolves a `$ref`: the bundler replaces an inline provider-config object
-    with a pointer at its registered component, so the published spec needs one more hop
-    where the modular source has none.
-    """
-
-    def deref(node):
-        ref = node.get("$ref") if isinstance(node, dict) else None
-        if not ref or components is None:
-            return node
-        return components.get(ref.rsplit("/", 1)[-1], {})
-
-    schema = deref(source.get(schema_name) or {}).get("properties") or {}
-    if field not in schema and "provider_configs" in schema:
-        items = deref((schema["provider_configs"] or {}).get("items") or {})
-        schema = items.get("properties") or {}
-    return schema.get(field)
-
-
-def test_model_patterns_declare_the_whole_contract():
-    """Every model-pattern field documents the same rules and constrains its own items.
-
-    ModelPatternList.Validate rejects blank, duplicate, `*`, and un-compilable patterns at
-    save time, and matching is a case-insensitive full match against both the bare model
-    name and `provider/model`. A declaration that states only part of that leaves a client
-    free to send values the server refuses, or to misread how far a block pattern reaches.
-    """
-    sources = {}
+    schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
+    schema_text = (HERE / "schemas" / "management" / "warp.yaml").read_text(encoding="utf-8")
+    path_text = (HERE / "paths" / "management" / "warp.yaml").read_text(encoding="utf-8")
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle_schemas = bundle["components"]["schemas"]
     problems = []
 
-    required_phrases = (
-        ("case-insensitively as a full match", "how patterns are matched"),
-        ("`provider/model`", "that the qualified name is matched too"),
-        ("`*` is not a valid pattern", "that `*` is not a pattern"),
-        ("refused", "that invalid entries are refused at save time"),
-    )
+    # The retired design: a write-only secret, its presence flag, and the
+    # redaction and omitted-versus-empty rules that only a secret field needs.
+    retired = ("api_key_set", "credential redacted", "the credential redacted")
 
-    for filename, schema_name, field in PATTERN_DECLARATIONS:
-        where = f"{filename} {schema_name}.{field}"
-        source = sources.setdefault(
-            filename, load(HERE / "schemas" / "management" / filename)
-        )
-        declaration = pattern_property(source, schema_name, field)
-        if declaration is None:
-            problems.append(f"{where}: not declared")
+    # One checker, used for the source fragments and for the bundle. The bundler
+    # only resolves refs - it validates no wording - so a bundled description can
+    # drift from the fragment it came from, and two separate checkers let the
+    # source side pass text the bundle side rejected.
+    def check_bundled(where, description):
+        if not description:
+            return
+        for phrase in retired:
+            if phrase in description:
+                problems.append(f"{where}: mentions retired `{phrase}`")
+        if re.search(r"`api_key`", description):
+            problems.append(f"{where}: documents a write-only `api_key` field")
+        if "Defaults to this Bifrost's own origin" in description:
+            problems.append(f"{where}: base_url claims it defaults to this Bifrost's origin")
+        # A redaction *claim*, not any mention of the word: the corrected text
+        # says "not a redacted credential", and flagging that would fail the
+        # contract for stating it correctly. Whitespace is collapsed first
+        # because YAML block folding puts newlines inside the phrase.
+        flat = " ".join(description.split())
+        if re.search(r"(?<!not a )redacted credential|credentials? (is|are) redacted|with the credential redacted", flat):
+            problems.append(f"{where}: claims redaction")
+
+    # One checker for the source text and the bundle, so the two cannot drift.
+    # The source loop used to reject only the three exact `retired` phrases, so
+    # wording like "credentials are redacted" passed here while check_bundled
+    # rejected it - and a source fragment that had not been rebundled yet was
+    # exactly the case this invariant exists to catch.
+    for where, blob in (
+        ("schemas/management/warp.yaml", schema_text),
+        ("paths/management/warp.yaml", path_text),
+    ):
+        check_bundled(where, blob)
+
+    for schema_name in ("WarpConfig", "WarpConfigInput"):
+        for where, schema in (
+            ("schemas/management/warp.yaml", schema_source[schema_name]),
+            ("openapi.json", bundle_schemas[schema_name]),
+        ):
+            properties = schema["properties"]
+            for legacy in ("api_key", "api_key_set"):
+                if legacy in properties:
+                    problems.append(f"{where} {schema_name}: unexpected {legacy} property")
+            if "api_key_id" not in properties:
+                problems.append(f"{where} {schema_name}: missing api_key_id")
+
+            descriptions = [schema.get("description") or ""]
+            descriptions += [
+                (prop.get("description") or "") for prop in properties.values()
+            ]
+            for description in descriptions:
+                for phrase in retired:
+                    if phrase in description:
+                        problems.append(
+                            f"{where} {schema_name}: description still mentions `{phrase}`"
+                        )
+                if "Defaults to this Bifrost's own origin" in description:
+                    problems.append(
+                        f"{where} {schema_name}: base_url description claims the wrong default"
+                    )
+
+    operations = bundle["paths"]["/api/warp/config"]
+    for method, operation in operations.items():
+        if not isinstance(operation, dict):
             continue
+        check_bundled(f"openapi.json {method.upper()} /api/warp/config", operation.get("description"))
+        for status, response in (operation.get("responses") or {}).items():
+            if isinstance(response, dict):
+                check_bundled(
+                    f"openapi.json {method.upper()} /api/warp/config {status}", response.get("description")
+                )
 
-        description = " ".join((declaration.get("description") or "").split())
-        for phrase, what in required_phrases:
-            if phrase not in description:
-                problems.append(f"{where}: description does not say {what}")
-        if field.startswith("blacklisted") and "win over" not in description:
-            problems.append(f"{where}: description does not say block patterns win")
+    # Schema descriptions land in the bundle too, and checking only the
+    # operation and response descriptions let a stale `components.schemas` entry
+    # keep the retired wording while this invariant passed. The property
+    # descriptions are where the credential model is actually spelled out.
+    for name, schema in (bundle.get("components", {}).get("schemas") or {}).items():
+        if not isinstance(schema, dict) or not name.startswith("Warp"):
+            continue
+        check_bundled(f"openapi.json components.schemas.{name}", schema.get("description"))
+        for prop, definition in (schema.get("properties") or {}).items():
+            if isinstance(definition, dict):
+                check_bundled(f"openapi.json components.schemas.{name}.{prop}", definition.get("description"))
 
-        # config.schema.json rejects these values outright. The published spec describes the
-        # same API, so it carries the same constraints rather than only prose about them.
-        if declaration.get("uniqueItems") is not True:
-            problems.append(f"{where}: array does not set uniqueItems")
-        items = declaration.get("items") or {}
-        if items.get("minLength") != 1:
-            problems.append(f"{where}: items do not set minLength 1")
-        if items.get("not") != {"const": "*"}:
-            problems.append(f"{where}: items do not exclude the `*` wildcard")
-
-    assert not problems, "model pattern contract drift:\n    " + "\n    ".join(problems)
+    assert not problems, "Warp credential contract drift:\n    " + "\n    ".join(problems)
 
 
-def test_published_bundle_is_current():
-    """openapi.json is what bundle.py produces from the sources as they stand.
+def test_warp_chat_response_contract_is_current():
+    """WarpSessionResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
+    object, and error.code is the closed set the agent actually emits. The chat route is
+    always registered and reports its unavailability as a 503 carrying a machine-readable
+    reason, so that and the 413 for oversized conversations are the part of the contract a
+    generated client has to handle - and a 404 must not reappear."""
+    import json
 
-    The bundle is a tracked artifact, and every other invariant here reads the modular
-    sources, which is exactly how a stale bundle survives review: a schema edit lands, the
-    rebuild does not, and the published spec keeps describing the previous contract.
-    bundle.py is deterministic, so regenerating into a temp file and comparing is an exact
-    check rather than a sampled one.
-    """
-    import subprocess
-    import tempfile
+    schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
+    path_source = load(HERE / "paths" / "management" / "warp.yaml")
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    problems = []
 
-    with tempfile.TemporaryDirectory() as tmp:
-        rebuilt = Path(tmp) / "openapi.json"
-        result = subprocess.run(
-            [sys.executable, "bundle.py", "--output", str(rebuilt)],
-            cwd=HERE,
-            capture_output=True,
-            text=True,
+    # The codes the agent emits, read from the Go source rather than restated here:
+    # a constant that stops being emitted must not linger in the published enum.
+    agent = (REPO_ROOT / "framework" / "warp" / "agent.go").read_text(encoding="utf-8")
+    constants = dict(re.findall(r'(Err[A-Za-z]+)\s+=\s+"([a-z_]+)"', agent))
+    emitted = sorted({
+        constants[name]
+        for name in re.findall(r"Code:\s+(Err[A-Za-z]+)", agent)
+        if name in constants
+    })
+    if not emitted:
+        problems.append("could not read any emitted error codes from framework/warp/agent.go")
+
+    response = schema_source["WarpSessionResponse"]["properties"]
+    usage = response["usage"]
+    # Either a direct $ref, or allOf[$ref] - the latter is how OpenAPI 3.0 keeps a
+    # description alongside a referenced schema.
+    refs = [usage["$ref"]] if "$ref" in usage else [
+        entry["$ref"] for entry in (usage.get("allOf") or []) if "$ref" in entry
+    ]
+    if not refs:
+        problems.append(
+            "schemas/management/warp.yaml WarpSessionResponse.usage is a bare object; "
+            "reference BifrostLLMUsage so clients get typed token fields"
         )
-        assert result.returncode == 0, f"bundle.py failed:\n{result.stderr}"
-        want = rebuilt.read_text(encoding="utf-8")
+    elif not any("usage.yaml#/BifrostLLMUsage" in ref for ref in refs):
+        problems.append(f"WarpSessionResponse.usage references {refs}, not BifrostLLMUsage")
 
-    got = (HERE / "openapi.json").read_text(encoding="utf-8")
-    assert want == got, (
-        "openapi.json does not match the modular sources, run `python3 bundle.py`"
-    )
+    error = response["error"]
+    declared = sorted(((error.get("properties") or {}).get("code") or {}).get("enum") or [])
+    if declared != emitted:
+        problems.append(
+            f"WarpSessionResponse.error.code enum is {declared}, but the agent emits {emitted}"
+        )
+    if sorted(error.get("required") or []) != ["code", "message"]:
+        problems.append("WarpSessionResponse.error must require both code and message")
 
+    # The bundle has to carry the resolved usage properties, not an empty object.
+    # Looked up defensively: `check` only catches AssertionError, so a KeyError
+    # here would abort the whole invariant script instead of reporting the very
+    # drift this test exists to report.
+    bundled = (bundle.get("components") or {}).get("schemas") or {}
+    if "WarpSessionResponse" not in bundled:
+        problems.append("openapi.json does not define WarpSessionResponse")
+    else:
+        bundled_usage = (bundled["WarpSessionResponse"].get("properties") or {}).get("usage")
+        if bundled_usage is None:
+            problems.append("openapi.json WarpSessionResponse has no usage property")
+        elif not (bundled_usage.get("properties") or bundled_usage.get("allOf") or bundled_usage.get("$ref")):
+            problems.append("openapi.json WarpSessionResponse.usage resolved to an untyped object")
+
+    chat_responses = (((path_source.get("warp-session") or {}).get("post") or {}).get("responses") or {})
+    if not chat_responses:
+        problems.append("paths/management/warp.yaml declares no warp-session responses")
+    for status in ("503", "413"):
+        if status not in chat_responses:
+            problems.append(f"paths/management/warp.yaml warp-session does not declare {status}")
+    # The route is registered unconditionally, so a deployment that cannot answer
+    # says so in a 503 body the dashboard branches on. A documented 404 would
+    # send a generated client looking for a route that always exists.
+    if "404" in chat_responses:
+        problems.append(
+            "warp-session documents a 404, but the route is always registered; "
+            "an unusable deployment answers 503 with a WarpUnavailable reason"
+        )
+    unavailable = chat_responses.get("503") or {}
+    if "WarpUnavailable" not in json.dumps(unavailable.get("content") or {}):
+        problems.append("warp-session 503 must return WarpUnavailable so the reason is machine-readable")
+    if "413" in chat_responses and "content" not in chat_responses["413"]:
+        problems.append("warp-session 413 returns a JSON error body but documents no schema")
+    # The route is registered unconditionally now, so a deployment that cannot
+    # answer says so in a 503 body the dashboard branches on. A documented 404
+    # would send a generated client looking for a route that always exists.
+    if "404" in chat_responses:
+        problems.append(
+            "warp-session documents a 404, but the route is always registered; "
+            "an unusable deployment answers 503 with a WarpUnavailable reason"
+        )
+    # Checked structurally, not by searching the serialized response. A substring
+    # match passes when some other schema merely mentions WarpUnavailable in a
+    # description or example, which is exactly when the machine-readable `reason`
+    # would have gone missing without the invariant noticing.
+    unavailable = chat_responses.get("503") or {}
+    json_body = ((unavailable.get("content") or {}).get("application/json") or {})
+    ref = (json_body.get("schema") or {}).get("$ref") or ""
+    if not ref.endswith("#/WarpUnavailable"):
+        problems.append(
+            "warp-session 503 application/json must $ref WarpUnavailable directly "
+            f"so the reason stays machine-readable (found {ref!r})"
+        )
+
+    assert not problems, "Warp chat response contract drift:\n    " + "\n    ".join(problems)
+
+
+def test_warp_unconfigured_response_validates():
+    """An unconfigured deployment gets 200 with configured:false and zero-valued fields,
+    deliberately, so the settings page can render its empty form. The schema has to admit
+    that response: a minimum that the documented empty state cannot satisfy makes every
+    fresh install fail its own contract."""
+    schema = load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfig"]
+    problems = []
+
+    # Fields ConfigView leaves at zero when no row exists.
+    for field in ("embedding_dimension",):
+        # .get, not [field]: check() catches AssertionError only, so a KeyError
+        # here would abort the whole invariant script instead of reporting the
+        # drift it exists to report - and a WarpConfig that lost this property
+        # is exactly the drift worth hearing about.
+        spec = schema.get("properties", {}).get(field)
+        if spec is None:
+            problems.append(f"WarpConfig has no {field} property; the unconfigured response contract cannot be checked")
+            continue
+        minimum = spec.get("minimum")
+        if minimum is not None and minimum > 0 and "oneOf" not in schema and "allOf" not in schema:
+            problems.append(
+                f"WarpConfig.{field} requires minimum {minimum}, but an unconfigured "
+                "deployment returns 0 - the documented empty state fails its own schema"
+            )
+
+    assert not problems, "Warp unconfigured response contract:\n    " + "\n    ".join(problems)
+
+
+def test_warp_config_input_models_the_embedding_contract():
+    """ValidateConfigInput requires provider, model, embedding_provider, embedding_model
+    and a positive embedding_dimension once enabled is true, and allows an incomplete
+    draft when it is false. The schema has to say the same, or a generated client sends
+    a body the server rejects and the contract is only discoverable by trying it."""
+    schema = load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfigInput"]
+    problems = []
+
+    conditional = schema.get("if")
+    if not conditional:
+        problems.append(
+            "WarpConfigInput has no enabled:true conditional, so an enabled request with "
+            "embedding_dimension 0 or missing required fields validates but is refused"
+        )
+    else:
+        if (conditional.get("properties") or {}).get("enabled", {}).get("const") is not True:
+            problems.append("the conditional does not key on enabled: true")
+        then = schema.get("then") or {}
+        required = set(then.get("required") or [])
+        for field in ("provider", "model", "embedding_provider", "embedding_model", "embedding_dimension"):
+            if field not in required:
+                problems.append(f"an enabled config must require {field}")
+        minimum = ((then.get("properties") or {}).get("embedding_dimension") or {}).get("minimum")
+        if minimum != 1:
+            problems.append(f"an enabled config needs embedding_dimension minimum 1, found {minimum}")
+
+    # The draft path must stay open, or the form cannot be filled in over two sittings.
+    if "required" in schema:
+        problems.append("WarpConfigInput must not require fields unconditionally; a disabled draft is valid")
+
+    assert not problems, "Warp config input contract:\n    " + "\n    ".join(problems)
 
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
 check("no fragment is defined but never used", test_no_orphaned_fragments)
 check("no operationId is claimed by two mounted operations", test_duplicate_operation_ids)
+def test_warp_config_input_models_the_enabled_contract():
+    """ValidateConfigInput rejects an enabled config with no provider or model, so the
+    schema has to say so too. Leaving the fields merely optional means `{"enabled": true}`
+    validates against the published contract and then gets a 400 from the API - a generated
+    client would have checked the payload and still been wrong."""
+    import json
+
+    problems = []
+    for source, schema in (
+        ("warp.yaml", load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfigInput"]),
+        ("openapi.json", json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))["components"]["schemas"]["WarpConfigInput"]),
+    ):
+        condition = schema.get("if") or {}
+        enabled = (condition.get("properties") or {}).get("enabled") or {}
+        if enabled.get("const") is not True:
+            problems.append(f"{source}: WarpConfigInput has no `if enabled is true` condition")
+            continue
+        then = schema.get("then") or {}
+        required = set(then.get("required") or [])
+        then_properties = then.get("properties") or {}
+        for field in ("provider", "model"):
+            if field not in required:
+                problems.append(f"{source}: an enabled WarpConfigInput does not require `{field}`")
+            # `required` only checks presence; ValidateConfigInput trims and
+            # rejects the empty result, so both constraints have to be here or a
+            # client validates "   " and still gets a 400.
+            constraint = then_properties.get(field) or {}
+            if constraint.get("minLength") != 1:
+                problems.append(f"{source}: an enabled `{field}` has no minLength 1")
+            if not constraint.get("pattern"):
+                problems.append(f"{source}: an enabled `{field}` has no non-whitespace pattern")
+
+        # base_url is optional, but a non-empty one must be an absolute http(s)
+        # URL with no userinfo - the same rule ValidateConfigInput applies.
+        #
+        # Checked by behaviour, not just by presence: a pattern that exists but
+        # admits whitespace in the authority, or a dropped `format`, is exactly
+        # the drift a non-empty check cannot see.
+        base_url = (schema.get("properties") or {}).get("base_url") or {}
+        pattern = base_url.get("pattern")
+        if not pattern:
+            problems.append(f"{source}: base_url has no pattern constraining it to an absolute http(s) URL without userinfo")
+        else:
+            accepted = ("", "https://api.example.com", "http://localhost:8080", "https://a.com/v1")
+            rejected = (
+                "https://host name",  # whitespace in the authority
+                "https://tok@a.com",  # userinfo
+                "https://u:p@a.com",
+                "api.example.com",  # not absolute
+                "https://",  # scheme only
+                "ftp://a.com",  # wrong scheme
+            )
+            for value in accepted:
+                if not re.match(pattern, value):
+                    problems.append(f"{source}: base_url pattern rejects {value!r}, which the server accepts")
+            for value in rejected:
+                if re.match(pattern, value):
+                    problems.append(f"{source}: base_url pattern accepts {value!r}, which the server rejects")
+        # url.Parse also rejects a malformed percent escape such as "https://%",
+        # which a character-class pattern cannot express - format carries that.
+        if base_url.get("format") != "uri-reference":
+            problems.append(f"{source}: base_url has no `format: uri-reference`")
+
+    assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
+check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
+check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
+check("warp unconfigured response satisfies its own schema", test_warp_unconfigured_response_validates)
+check("warp config input models its enabled-state contract", test_warp_config_input_models_the_enabled_contract)
 check("every operation declares its own security", test_every_operation_declares_security)
-
-check("model access fields are documented consistently across virtual key schemas", test_model_access_fields_are_documented_consistently)
-
-check("model pattern declarations state the whole contract", test_model_patterns_declare_the_whole_contract)
-check("published bundle is regenerated from the current sources", test_published_bundle_is_current)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

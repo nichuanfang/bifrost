@@ -88,7 +88,8 @@ func (provider *FireworksProvider) ListModels(ctx *schemas.BifrostContext, keys 
 func (provider *FireworksProvider) listModelsByKey(_ *schemas.BifrostContext, key schemas.Key, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return (&openai.OpenAIListModelsResponse{}).ToBifrostListModelsResponse(
 		schemas.Fireworks,
-		key.ModelAccess(),
+		key.Models,
+		key.BlacklistedModels,
 		key.Aliases,
 		false,
 	), nil
@@ -352,6 +353,11 @@ func (provider *FireworksProvider) Speech(ctx *schemas.BifrostContext, key schem
 // Rerank is not supported by the Fireworks AI provider.
 func (provider *FireworksProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Fireworks provider.
+func (provider *FireworksProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Fireworks provider.

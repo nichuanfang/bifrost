@@ -396,7 +396,7 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 		}
 
 		if result.response != nil {
-			providerResponse := result.response.ToBifrostListModelsResponse(providerName, result.provider, key.ModelAccess(), key.Aliases, request.Unfiltered)
+			providerResponse := result.response.ToBifrostListModelsResponse(providerName, result.provider, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 			if providerResponse != nil {
 				aggregatedResponse.Data = append(aggregatedResponse.Data, providerResponse.Data...)
 				totalLatency += result.latency
@@ -798,6 +798,11 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 // Rerank is not supported by the HuggingFace provider.
 func (provider *HuggingFaceProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the HuggingFace provider.
+func (provider *HuggingFaceProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Huggingface provider.

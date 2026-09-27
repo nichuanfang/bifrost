@@ -2,22 +2,26 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 import { ModelAccessChipLabel } from "./modelAccessChip";
-import { isWildcardList, type ModelAccessMode } from "./utils";
+import { isRegexEntry, isWildcardList, type ModelAccessMode } from "./utils";
 
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "success";
 
 interface ModelAccessBadgesProps {
-	/** The exact list: model names, or "*" alone. */
+	/** The list: model names, "*" alone, or `regex:` entries. */
 	value: readonly string[] | undefined | null;
-	/** The pattern twin of `value`. */
-	patterns?: readonly string[] | undefined | null;
 	mode: ModelAccessMode;
 	/**
 	 * Treat the list as "all models" even without a "*" entry. Access profiles and
 	 * projects carry that as a separate all_models_allowed flag.
 	 */
 	allModels?: boolean;
-	/** Rendered when both lists are empty; defaults to the mode's standard badge. */
+	/**
+	 * For a block list, whether the allow side beside it permits every model. An empty block list
+	 * blocks nothing only when it does: against a restricted allow list, every model outside that
+	 * list is already denied, so "no models blocked" would read as "everything is available".
+	 */
+	allowsAllModels?: boolean;
+	/** Rendered when the list is empty; defaults to the mode's standard badge. */
 	empty?: ReactNode;
 	/** Badge variant for individual entries; defaults per mode. */
 	entryVariant?: BadgeVariant;
@@ -27,13 +31,19 @@ interface ModelAccessBadgesProps {
 
 /**
  * Read-only rendering of an allow or block side: the "All Models" badge, one
- * badge per exact entry, one monospace badge with an icon per pattern, or an
- * empty-state badge. Replaces the badge blocks that the VK, access profile and
- * project detail views used to each carry.
+ * badge per entry (patterns in monospace with an icon), or an empty-state badge.
  */
-export function ModelAccessBadges({ value, patterns, mode, allModels, empty, entryVariant, entryClassName, className }: ModelAccessBadgesProps) {
+export function ModelAccessBadges({
+	value,
+	mode,
+	allModels,
+	allowsAllModels,
+	empty,
+	entryVariant,
+	entryClassName,
+	className,
+}: ModelAccessBadgesProps) {
 	const entries = (value ?? []).filter((e) => e !== "*");
-	const patternEntries = patterns ?? [];
 	const isAll = allModels || isWildcardList(value);
 
 	if (isAll) {
@@ -48,7 +58,7 @@ export function ModelAccessBadges({ value, patterns, mode, allModels, empty, ent
 		);
 	}
 
-	if (entries.length === 0 && patternEntries.length === 0) {
+	if (entries.length === 0) {
 		if (empty !== undefined) return <>{empty}</>;
 		return mode === "allow" ? (
 			<Badge variant="destructive" className={cn("text-xs", className)}>
@@ -56,7 +66,7 @@ export function ModelAccessBadges({ value, patterns, mode, allModels, empty, ent
 			</Badge>
 		) : (
 			<Badge variant="secondary" className={cn("text-xs", className)}>
-				No models blocked
+				{allowsAllModels === false ? "All models except those allowed" : "No models blocked"}
 			</Badge>
 		);
 	}
@@ -65,18 +75,13 @@ export function ModelAccessBadges({ value, patterns, mode, allModels, empty, ent
 	return (
 		<div className={cn("flex flex-wrap gap-1", className)}>
 			{entries.map((entry) => (
-				<Badge key={`model:${entry}`} variant={variant} className={cn("max-w-full text-xs", entryClassName)}>
-					<ModelAccessChipLabel entry={entry} />
-				</Badge>
-			))}
-			{patternEntries.map((pattern) => (
 				<Badge
-					key={`pattern:${pattern}`}
+					key={entry}
 					variant={variant}
-					className={cn("max-w-full font-mono text-xs", entryClassName)}
-					data-testid="model-access-regex-badge"
+					className={cn("max-w-full text-xs", isRegexEntry(entry) && "font-mono", entryClassName)}
+					data-testid={isRegexEntry(entry) ? "model-access-regex-badge" : undefined}
 				>
-					<ModelAccessChipLabel entry={pattern} kind="pattern" />
+					<ModelAccessChipLabel entry={entry} />
 				</Badge>
 			))}
 		</div>

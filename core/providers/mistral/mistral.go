@@ -126,7 +126,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// Create final response
-	response := mistralResponse.ToBifrostListModelsResponse(key.ModelAccess(), key.Aliases, request.Unfiltered)
+	response := mistralResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
@@ -650,6 +650,11 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 // Rerank is not supported by the Mistral provider.
 func (provider *MistralProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Mistral provider.
+func (provider *MistralProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR performs an OCR request to the Mistral API.

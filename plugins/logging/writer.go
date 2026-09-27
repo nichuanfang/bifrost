@@ -50,6 +50,10 @@ type pendingInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.Log
 	createdAt time.Time
+	// drained is set by Inject under mu once entries has been handed to the write
+	// queue. A storeOrEnqueueEntry that appends after that point would be writing
+	// into a slice nobody reads again; it writes directly instead.
+	drained bool
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
@@ -260,12 +264,8 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	p.pendingMCPLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*logstore.MCPToolLog); ok {
 			if pending.CreatedAt.Before(cutoff) {
-				actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
-				if !loaded {
-					return true
-				}
-				stalePending, ok := actual.(*logstore.MCPToolLog)
-				if !ok || stalePending == nil {
+				stalePending, ok := p.claimStaleMCPEntry(key)
+				if !ok {
 					return true
 				}
 
@@ -277,6 +277,24 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
+}
+
+// claimStaleMCPEntry takes a pending MCP entry away from PostMCPHook for the stale-entry reaper.
+// It reports false when the entry is already gone, which means PostMCPHook claimed it first.
+func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) {
+	actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
+	if !loaded {
+		// PostMCPHook claimed it first and still needs the held arguments.
+		return nil, false
+	}
+	// Arguments held back for an unresolved key go with the entry: a stale entry never
+	// learns its final content decision, so it never gets them.
+	p.provisionalMCPArguments.Delete(key)
+	entry, ok := actual.(*logstore.MCPToolLog)
+	if !ok || entry == nil {
+		return nil, false
+	}
+	return entry, true
 }
 
 // enqueueLogEntry pushes a complete log entry to the write queue.
@@ -306,6 +324,14 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 // normal async write queue.
 func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+}
+
+// EnqueueMCPToolLogEntry pushes a completed MCP log through the normal async write queue.
+func (p *LoggerPlugin) EnqueueMCPToolLogEntry(entry *logstore.MCPToolLog) {
+	p.mu.Lock()
+	callback := p.mcpToolLogCallback
+	p.mu.Unlock()
+	p.enqueueMCPToolLogEntry(entry, callback)
 }
 
 // enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.

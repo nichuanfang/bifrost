@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -216,6 +217,19 @@ func mapBifrostServiceTierToBedrock(tier schemas.BifrostServiceTier) BedrockServ
 	default:
 		return BedrockServiceTierType(tier)
 	}
+}
+
+// bedrockServiceTierForModel returns a non-default tier only when the model
+// catalog explicitly advertises it. Omitting default/auto selects Bedrock's
+// Standard tier without requiring capability metadata for every model.
+func bedrockServiceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *BedrockServiceTier {
+	if tier == nil || *tier == schemas.BifrostServiceTierDefault || *tier == schemas.BifrostServiceTierAuto {
+		return nil
+	}
+	if !caps.ServiceTierSupported(*tier, false) {
+		return nil
+	}
+	return &BedrockServiceTier{Type: mapBifrostServiceTierToBedrock(*tier)}
 }
 
 // mapBedrockServiceTierToBifrost maps a BedrockServiceTierType to a BifrostServiceTier.
@@ -510,7 +524,10 @@ func bedrockAliasToolName(ctx context.Context, name string) string {
 		semanticName = "tool"
 	}
 
-	hash := fmt.Sprintf("%08x", uint32(xxhash.Sum64String(name)))
+	// The "t" keeps the alias letter-first: a bare hex hash starts with a digit 10
+	// times in 16, and moonshotai.kimi-k3 answers any digit-leading tool name with
+	// HTTP 200 and an empty stream.
+	hash := fmt.Sprintf("t%08x", uint32(xxhash.Sum64String(name)))
 	maxSemanticLen := 64 - len(hash) - 1
 	if len(semanticName) > maxSemanticLen {
 		semanticName = semanticName[:maxSemanticLen]
@@ -844,11 +861,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		}
 	}
-	if bifrostReq.Params.ServiceTier != nil {
-		bedrockReq.ServiceTier = &BedrockServiceTier{
-			Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
-		}
-	}
+	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
 		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
@@ -1112,6 +1125,19 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
+	// Set once the leading system prompt ends (first non-system message). A system/developer
+	// message after that point is a mid-conversation reminder and is inlined in place as a
+	// user turn, folded into the preceding user turn when there is one (Converse requires
+	// alternating roles). Hoisting it into `system` grows the prompt front on every turn and
+	// invalidates Bedrock's prefix cache for the whole conversation behind it; same rule as
+	// the Responses path (ConvertBifrostMessagesToBedrockMessages with inlineSystemReminders).
+	seenNonSystemMessage := false
+
+	// Reminder blocks with no preceding user turn to fold back into, held until the next user turn
+	// arrives. Giving them a turn of their own instead would read as assistant, user, user once
+	// that turn lands, and Converse turns have to alternate.
+	var pendingReminderBlocks []BedrockContentBlock
+
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
@@ -1129,7 +1155,18 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 		msg := bifrostMessages[i]
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
-			// Convert system message
+			if seenNonSystemMessage {
+				// Mid-conversation reminder: inline in place (see seenNonSystemMessage).
+				if reminder := convertChatSystemReminderToBedrockUserMessage(msg); reminder != nil {
+					if n := len(messages); n > 0 && messages[n-1].Role == BedrockMessageRoleUser {
+						messages[n-1].Content = append(messages[n-1].Content, reminder.Content...)
+					} else {
+						pendingReminderBlocks = append(pendingReminderBlocks, reminder.Content...)
+					}
+				}
+				continue
+			}
+			// Leading system prompt: hoist into `system`.
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert system message: %w", err)
@@ -1137,14 +1174,28 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 			systemMessages = append(systemMessages, systemMsgs...)
 
 		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
+			seenNonSystemMessage = true
 			// Convert regular message
 			bedrockMsg, err := convertMessage(ctx, model, msg, docNamer)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 			}
+			if len(pendingReminderBlocks) > 0 {
+				if bedrockMsg.Role == BedrockMessageRoleUser {
+					// The reminder came before this turn in the input, so it leads the content and
+					// its cachePoint closes the cacheable prefix just ahead of the fresh user text.
+					bedrockMsg.Content = append(pendingReminderBlocks, bedrockMsg.Content...)
+				} else {
+					// assistant, reminder, assistant: the reminder still needs a user turn of its
+					// own, and putting it here is what keeps the roles alternating.
+					messages = append(messages, BedrockMessage{Role: BedrockMessageRoleUser, Content: pendingReminderBlocks})
+				}
+				pendingReminderBlocks = nil
+			}
 			messages = append(messages, bedrockMsg)
 
 		case schemas.ChatMessageRoleTool:
+			seenNonSystemMessage = true
 			// Collect all consecutive tool messages and group them into a single user message
 			var toolMessages []schemas.ChatMessage
 			toolMessages = append(toolMessages, msg)
@@ -1160,11 +1211,24 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert tool messages: %w", err)
 			}
+			if len(pendingReminderBlocks) > 0 {
+				// Tool results carry the user role, so the reminder folds into this turn rather than
+				// opening a second one. It trails the toolResult blocks, which stay at the front of
+				// the turn they answer.
+				bedrockMsg.Content = append(bedrockMsg.Content, pendingReminderBlocks...)
+				pendingReminderBlocks = nil
+			}
 			messages = append(messages, bedrockMsg)
 
 		default:
 			return nil, nil, fmt.Errorf("unsupported message role: %s", msg.Role)
 		}
+	}
+
+	// A reminder that ends the conversation has no later turn to fold into. It becomes the final
+	// user turn, which is the shape Converse wants at the tail anyway.
+	if len(pendingReminderBlocks) > 0 {
+		messages = append(messages, BedrockMessage{Role: BedrockMessageRoleUser, Content: pendingReminderBlocks})
 	}
 
 	return messages, systemMessages, nil
@@ -1184,6 +1248,72 @@ func reasoningSignatureForBedrock(sig *string) *string {
 	return sig
 }
 
+// extraParamStringSlice reads a string-array extra param. Over HTTP,
+// BedrockConverseRequest.UnmarshalJSON keeps unknown fields as json.RawMessage,
+// which schemas.SafeExtractStringSlice does not decode; in-process callers pass
+// Go values, which it does. A JSON null is absent, as a nil Go value would be.
+func extraParamStringSlice(value any) ([]string, bool) {
+	if raw, ok := value.(json.RawMessage); ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, false
+		}
+		var out []string
+		if err := sonic.Unmarshal(raw, &out); err != nil {
+			return nil, false
+		}
+		return out, true
+	}
+	return schemas.SafeExtractStringSlice(value)
+}
+
+// extraParamStringPointer is extraParamStringSlice for a string extra param. A
+// JSON null decodes into a string without error, so it is checked first: a
+// pointer to "" would read as an explicit setting and suppress a caller's default.
+func extraParamStringPointer(value any) (*string, bool) {
+	if raw, ok := value.(json.RawMessage); ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, false
+		}
+		var out string
+		if err := sonic.Unmarshal(raw, &out); err != nil {
+			return nil, false
+		}
+		return &out, true
+	}
+	return schemas.SafeExtractStringPointer(value)
+}
+
+// foreignRedactedContentPrefix marks a redactedContent blob Bifrost wrapped for a
+// Converse client. Converse types redactedContent as a blob, so strict SDKs
+// base64-decode it; a non-Bedrock upstream's token (an OpenAI Fernet token) is not
+// standard base64 and fails that decode (#7514). The prefix lets the next turn
+// unwrap it back to the exact token the upstream minted.
+const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
+
+// encodeRedactedContentForConverse leaves a canonical base64 blob (every native
+// Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
+// SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
+// byte-identical.
+func encodeRedactedContentForConverse(token string) string {
+	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
+		return token
+	}
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+}
+
+// decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
+// wrapped and returns every other blob unchanged.
+func decodeRedactedContentFromConverse(blob string) string {
+	decoded, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return blob
+	}
+	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
+		return token
+	}
+	return blob
+}
+
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
 // Bedrock accepts ("5m" | "1h"); anything else (e.g. Anthropic's "1m") is dropped to the default.
 func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
@@ -1192,6 +1322,55 @@ func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
 		cp.TTL = ttl
 	}
 	return cp
+}
+
+// convertChatSystemReminderToBedrockUserMessage is the Chat Completions twin of
+// convertBifrostSystemReminderToBedrockUserMessage: a mid-conversation role:"system" chat message
+// rendered as a user turn, each text wrapped in the <system-reminder> envelope, with only the LAST
+// breakpoint kept as a trailing cachePoint (an intermediate marker inside one message closes over
+// nothing the final one does not, and would burn one of the four checkpoints). The breakpoint is
+// taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
+// Text-only, like the `system` branch it replaces. Returns nil when the message yields no text.
+func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *BedrockMessage {
+	if msg.Content == nil {
+		return nil
+	}
+	var contentBlocks []BedrockContentBlock
+	wrap := func(text string) {
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
+	}
+	// Whichever breakpoint comes last wins, in whichever dialect it arrived: a cache_control on a
+	// text block (Anthropic) or a standalone cachePoint block after the content it closes over
+	// (Converse-native, and the form convertSystemMessages preserves on the hoisted path). Reading
+	// only the first kind drops the boundary a Converse-native client asked for.
+	var lastBreakpointTTL *string
+	haveBreakpoint := false
+	if msg.Content.ContentStr != nil {
+		if *msg.Content.ContentStr != "" {
+			wrap(*msg.Content.ContentStr)
+		}
+	} else if msg.Content.ContentBlocks != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				wrap(*block.Text)
+				if block.CacheControl != nil {
+					lastBreakpointTTL, haveBreakpoint = block.CacheControl.TTL, true
+				}
+				continue
+			}
+			if block.CachePoint != nil {
+				lastBreakpointTTL, haveBreakpoint = block.CachePoint.TTL, true
+			}
+		}
+	}
+	if len(contentBlocks) == 0 {
+		return nil
+	}
+	if haveBreakpoint {
+		contentBlocks = append(contentBlocks, BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
+	}
+	return &BedrockMessage{Role: BedrockMessageRoleUser, Content: contentBlocks}
 }
 
 // convertSystemMessages converts a Bifrost system message to Bedrock format
@@ -1396,42 +1575,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
 		if msg.Content.ContentStr != nil {
-			// Bedrock expects JSON to be a parsed object, not a string
-			// Validate and compact JSON without parsing into Go types (preserves key ordering)
-			var buf bytes.Buffer
-			if err := json.Compact(&buf, []byte(*msg.Content.ContentStr)); err != nil {
-				// If it's not valid JSON, wrap it as a text block instead
-				toolResultContent = append(toolResultContent, BedrockContentBlock{
-					Text: msg.Content.ContentStr,
-				})
-			} else {
-				compacted := buf.Bytes()
-				// Bedrock does not accept primitives or arrays directly in the json field
-				if len(compacted) > 0 && compacted[0] == '{' {
-					// Objects are valid as-is
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(compacted),
-					})
-				} else if len(compacted) > 0 && compacted[0] == '[' {
-					// Arrays need to be wrapped
-					wrapped := make([]byte, 0, len(compacted)+len(`{"results":}`))
-					wrapped = append(wrapped, `{"results":`...)
-					wrapped = append(wrapped, compacted...)
-					wrapped = append(wrapped, '}')
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(wrapped),
-					})
-				} else {
-					// Primitives (string, number, boolean, null) need to be wrapped
-					wrapped := make([]byte, 0, len(compacted)+len(`{"value":}`))
-					wrapped = append(wrapped, `{"value":`...)
-					wrapped = append(wrapped, compacted...)
-					wrapped = append(wrapped, '}')
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(wrapped),
-					})
-				}
-			}
+			// Bedrock expects JSON to be a parsed object, not a string. The helper
+			// validates, compacts, wraps arrays and primitives, falls back to a text
+			// block for non-JSON, and refuses json documents Converse rejects (such
+			// as objects carrying an empty-string key).
+			toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*msg.Content.ContentStr))
 		} else if msg.Content.ContentBlocks != nil {
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
@@ -2879,6 +3027,15 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 	}
 	compacted := buf.Bytes()
 
+	// Converse rejects a json document containing an empty-string object key with
+	// "The format of the value at ...toolResult.content.N.json is invalid" (verified live
+	// against us.anthropic.claude-haiku-4-5; Cursor's list_directory results carry such
+	// keys for extensionless files). A text block holding the same JSON string reads
+	// identically to the model, so fall back to text instead of mutating the payload.
+	if len(compacted) > 0 && (compacted[0] == '{' || compacted[0] == '[') && jsonHasEmptyObjectKey(compacted) {
+		return BedrockContentBlock{Text: schemas.Ptr(text)}
+	}
+
 	// Bedrock does not accept primitives or arrays directly in the json field
 	if len(compacted) > 0 && compacted[0] == '{' {
 		// Objects are valid as-is
@@ -2898,6 +3055,29 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		wrapped = append(wrapped, '}')
 		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
 	}
+}
+
+// jsonHasEmptyObjectKey reports whether the given JSON document contains an object key
+// that is the empty string, at any nesting depth. Callers only reach this after
+// json.Compact succeeded, so the input is known-valid and gjson's lazy parse is safe.
+// The empty-key check is gated on IsObject because ForEach over an array passes
+// synthetic keys that must not be mistaken for object keys.
+func jsonHasEmptyObjectKey(data []byte) bool {
+	var walk func(v gjson.Result) bool
+	walk = func(v gjson.Result) bool {
+		found := false
+		isObject := v.IsObject()
+		v.ForEach(func(key, value gjson.Result) bool {
+			if isObject && key.Str == "" {
+				found = true
+			} else if value.IsObject() || value.IsArray() {
+				found = walk(value)
+			}
+			return !found
+		})
+		return found
+	}
+	return walk(gjson.ParseBytes(data))
 }
 
 // BedrockMaxCachePoints is the number of cache checkpoints Bedrock accepts in one Converse
@@ -3033,6 +3213,43 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 	}
 
 	return dropped
+}
+
+// toolResultImagePlaceholder fills a tool result emptied by hoistToolResultImages.
+const toolResultImagePlaceholder = "Image attached below."
+
+// hoistToolResultImages moves images out of tool results to follow the last toolResult
+// in their message, for models that reject images inside a toolResult.
+func hoistToolResultImages(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		var images []BedrockContentBlock
+		last := -1
+		for j := range content {
+			toolResult := content[j].ToolResult
+			if toolResult == nil {
+				continue
+			}
+			last = j
+			moved := len(images)
+			kept := toolResult.Content[:0]
+			for _, block := range toolResult.Content {
+				if block.Image != nil {
+					images = append(images, block)
+					continue
+				}
+				kept = append(kept, block)
+			}
+			// An empty toolResult is rejected, so keep a stable placeholder behind.
+			if len(kept) == 0 && len(images) > moved {
+				kept = append(kept, BedrockContentBlock{Text: new(toolResultImagePlaceholder)})
+			}
+			toolResult.Content = kept
+		}
+		if len(images) > 0 {
+			req.Messages[i].Content = slices.Insert(content, last+1, images...)
+		}
+	}
 }
 
 // stripCachePointsFromBedrockRequest removes all CachePoint blocks from a

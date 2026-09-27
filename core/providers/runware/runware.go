@@ -131,7 +131,8 @@ func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	return ToBifrostListModelsResponse(
 		models,
 		provider.GetProviderKey(),
-		key.ModelAccess(),
+		key.Models,
+		key.BlacklistedModels,
 		key.Aliases,
 		request.Unfiltered,
 	), nil
@@ -351,6 +352,11 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 // Rerank is not supported by the Runware provider.
 func (provider *RunwareProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Runware provider.
+func (provider *RunwareProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Runware provider.

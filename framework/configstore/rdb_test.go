@@ -1266,6 +1266,84 @@ func TestGetVirtualKeysPaginated_AssignmentFilters(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeysPaginated_Search covers the fields a search term matches. The
+// search box is the only free-text affordance on the virtual keys page, so it
+// matches everything the "Assigned To" column can display - the key's own name,
+// its team, and its customer - rather than the name alone. (The assigned user is
+// the enterprise store's addition; the link table does not exist here.)
+func TestGetVirtualKeysPaginated_Search(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-1", Name: "Acme Corp"}))
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Platform Squad"}))
+
+	custID, teamID := "cust-1", "team-1"
+	seed := []*tables.TableVirtualKey{
+		{ID: "vk-cust", Name: "billing key", Value: *schemas.NewSecretVar("vk-cust-val"), IsActive: schemas.Ptr(true), CustomerID: &custID},
+		{ID: "vk-team", Name: "ingest key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID},
+		{ID: "vk-none", Name: "Platform scratch", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true)},
+	}
+	for _, vk := range seed {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	tests := []struct {
+		name    string
+		search  string
+		wantIDs []string
+	}{
+		{name: "matches the key name", search: "billing", wantIDs: []string{"vk-cust"}},
+		{name: "matches the key name case-insensitively", search: "BILLING", wantIDs: []string{"vk-cust"}},
+		{name: "matches the customer name", search: "acme", wantIDs: []string{"vk-cust"}},
+		{name: "matches the team name", search: "squad", wantIDs: []string{"vk-team"}},
+		{
+			// One term can hit a key by its own name and another by its team, and
+			// both belong in the results.
+			name:    "unions matches across fields",
+			search:  "platform",
+			wantIDs: []string{"vk-none", "vk-team"},
+		},
+		{name: "matches nothing when no field contains the term", search: "nonexistent", wantIDs: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{Search: tt.search})
+			require.NoError(t, err)
+
+			gotIDs := make([]string, 0, len(vks))
+			for _, vk := range vks {
+				gotIDs = append(gotIDs, vk.ID)
+			}
+			sort.Strings(gotIDs)
+			assert.Equal(t, tt.wantIDs, nonEmptyIDs(gotIDs))
+			assert.Equal(t, int64(len(tt.wantIDs)), totalCount)
+		})
+	}
+}
+
+// A search must not widen an assignment filter: the two narrow together.
+func TestGetVirtualKeysPaginated_SearchWithAssignmentFilter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Platform Squad"}))
+	teamID := "team-1"
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-team", Name: "ingest key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID,
+	}))
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-none", Name: "ingest scratch", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true),
+	}))
+
+	vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{Search: "ingest", TeamID: "team-1"})
+	require.NoError(t, err)
+	require.Len(t, vks, 1)
+	assert.Equal(t, "vk-team", vks[0].ID)
+	assert.Equal(t, int64(1), totalCount)
+}
+
 // nonEmptyIDs normalizes an empty slice to nil so table cases can express
 // "matches nothing" as a nil wantIDs.
 func nonEmptyIDs(ids []string) []string {
@@ -1412,6 +1490,28 @@ func TestUpdateVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", result.Name)
 	assert.False(t, result.IsActiveValue())
+
+	// Content logging is tri-state and every state must survive an update: the update path names
+	// its columns explicitly, so a column left off that list is silently never written.
+	vk.DisableContentLogging = new(true)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	require.NotNil(t, result.DisableContentLogging, "forcing content off must persist")
+	assert.True(t, *result.DisableContentLogging)
+
+	vk.DisableContentLogging = new(false)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	require.NotNil(t, result.DisableContentLogging, "forcing content on must persist")
+	assert.False(t, *result.DisableContentLogging)
+
+	vk.DisableContentLogging = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	assert.Nil(t, result.DisableContentLogging, "clearing the override must write NULL, back to inherit")
 }
 
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
@@ -4282,6 +4382,42 @@ func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
 				require.Equalf(t, want, got.Priority, "priority for %s", id)
 			}
 		})
+	}
+}
+
+// TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled pins the update path for a rule whose
+// enabled field is omitted, as every config.json rule without "enabled" is. Save writes every
+// column, so a nil Enabled used to write NULL into the NOT NULL column and fail startup.
+func TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	updaters := map[string]func(store *RDBConfigStore, rule *tables.TableRoutingRule) error{
+		"SyncRoutingRules": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.SyncRoutingRules(ctx, nil, []tables.TableRoutingRule{*rule})
+		},
+		"UpdateRoutingRule": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.UpdateRoutingRule(ctx, rule)
+		},
+	}
+
+	for name, update := range updaters {
+		for _, stored := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stored=%t", name, stored), func(t *testing.T) {
+				store := setupRDBTestStore(t)
+				created := routingRuleFixture("rule-a", 0, "openai")
+				created.Enabled = new(stored)
+				require.NoError(t, store.CreateRoutingRule(ctx, created))
+
+				incoming := routingRuleFixture("rule-a", 0, "openai")
+				incoming.Enabled = nil
+				require.NoError(t, update(store, incoming))
+
+				got, err := store.GetRoutingRule(ctx, "rule-a")
+				require.NoError(t, err)
+				require.NotNil(t, got.Enabled)
+				require.Equal(t, stored, *got.Enabled, "omitted enabled must keep the stored value")
+			})
+		}
 	}
 }
 

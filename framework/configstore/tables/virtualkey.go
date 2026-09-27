@@ -3,6 +3,7 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -30,12 +31,8 @@ type TableVirtualKeyProviderConfig struct {
 	Weight            *float64          `json:"weight"`
 	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
 	BlacklistedModels schemas.BlackList `gorm:"type:text;serializer:json" json:"blacklisted_models"` // ["*"] blocks all models; empty blocks none
-	// Pattern twins of the two lists above: RE2 patterns matched case-insensitively as a full
-	// match against the model name and "<provider>/<model>". Block patterns win over allow.
-	AllowedModelsPatterns     schemas.ModelPatternList `gorm:"column:allowed_models_patterns;type:text;serializer:json" json:"allowed_models_patterns"`
-	BlacklistedModelsPatterns schemas.ModelPatternList `gorm:"column:blacklisted_models_patterns;type:text;serializer:json" json:"blacklisted_models_patterns"`
-	AllowAllKeys              bool                     `gorm:"default:false" json:"allow_all_keys"` // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	RateLimitID               *string                  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	AllowAllKeys      bool              `gorm:"default:false" json:"allow_all_keys"`                 // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	RateLimitID       *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
@@ -107,7 +104,7 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BeforeSave validates the model lists and their pattern twins before GORM persists the record.
+// BeforeSave validates WhiteList and BlackList fields before GORM persists the record.
 func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.AllowedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid allowed_models: %w", err)
@@ -115,23 +112,7 @@ func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.BlacklistedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid blacklisted_models: %w", err)
 	}
-	if err := pc.AllowedModelsPatterns.Validate(); err != nil {
-		return fmt.Errorf("invalid allowed_models_patterns: %w", err)
-	}
-	if err := pc.BlacklistedModelsPatterns.Validate(); err != nil {
-		return fmt.Errorf("invalid blacklisted_models_patterns: %w", err)
-	}
 	return nil
-}
-
-// ModelAccess returns the provider config's model rule: exact lists plus their pattern twins.
-func (pc *TableVirtualKeyProviderConfig) ModelAccess() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
-		Allowed:         pc.AllowedModels,
-		Blocked:         pc.BlacklistedModels,
-		AllowedPatterns: pc.AllowedModelsPatterns,
-		BlockedPatterns: pc.BlacklistedModelsPatterns,
-	}
 }
 
 // MarshalJSON custom marshaller to ensure AllowedModels and BlacklistedModels are always arrays (never null)
@@ -147,27 +128,15 @@ func (pc TableVirtualKeyProviderConfig) MarshalJSON() ([]byte, error) {
 	if blacklistedModels == nil {
 		blacklistedModels = []string{}
 	}
-	allowedPatterns := pc.AllowedModelsPatterns
-	if allowedPatterns == nil {
-		allowedPatterns = []string{}
-	}
-	blacklistedPatterns := pc.BlacklistedModelsPatterns
-	if blacklistedPatterns == nil {
-		blacklistedPatterns = []string{}
-	}
 
 	return json.Marshal(&struct {
 		Alias
-		AllowedModels             []string `json:"allowed_models"`
-		BlacklistedModels         []string `json:"blacklisted_models"`
-		AllowedModelsPatterns     []string `json:"allowed_models_patterns"`
-		BlacklistedModelsPatterns []string `json:"blacklisted_models_patterns"`
+		AllowedModels     []string `json:"allowed_models"`
+		BlacklistedModels []string `json:"blacklisted_models"`
 	}{
-		Alias:                     Alias(pc),
-		AllowedModels:             allowedModels,
-		BlacklistedModels:         blacklistedModels,
-		AllowedModelsPatterns:     allowedPatterns,
-		BlacklistedModelsPatterns: blacklistedPatterns,
+		Alias:             Alias(pc),
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
 	})
 }
 
@@ -282,14 +251,27 @@ type TableVirtualKey struct {
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
-	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
+	// key belongs to at most one owner, which is what decides whose money it spends and whose
+	// access profile it answers to.
+	TeamID     *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	// BusinessUnitID is a bare indexed column rather than a GORM association: business units are
+	// an enterprise table this package does not know, so the column records the owner without this
+	// side being able to preload it. Whoever owns the business unit resolves the name.
+	BusinessUnitID *string `gorm:"type:varchar(255);index" json:"business_unit_id,omitempty"`
+	RateLimitID    *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	AllowAllProviders bool `gorm:"default:false" json:"allow_all_providers"`
+
+	// DisableContentLogging is the key's own say on whether request and response content is
+	// persisted for its traffic. Tri-state on purpose: nil inherits client.disable_content_logging,
+	// true forces content off for every sink, false forces content on for the log store only (each
+	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
+	// write the default for a nil pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
@@ -302,6 +284,23 @@ type TableVirtualKey struct {
 	// managed-key notice without a separate, differently-gated access-profile lookup.
 	// Populated on the governance read paths from the external resolver; false in OSS.
 	IsAccessProfileManaged bool `gorm:"-" json:"is_access_profile_managed,omitempty"`
+
+	// AssignedUser is the user this key is assigned to, when any. Like
+	// IsAccessProfileManaged it is read-only and never persisted: the VK-user link
+	// lives in an enterprise table, so it is filled in on the governance read paths
+	// by a downstream resolver and stays nil in OSS. No omitempty - "no assignee" has
+	// to reach the UI as an explicit null. Absence carries the other half of the
+	// meaning, "not resolved", and is produced by MarshalJSON off AssigneeResolved
+	// rather than by a struct tag, which cannot tell the two nils apart.
+	AssignedUser *AssignedUser `gorm:"-" json:"assigned_user"`
+
+	// AssigneeResolved records whether AssignedUser is an answer or an absence of one.
+	// True means the assignee lookup ran and settled the question, so AssignedUser is
+	// authoritative (a user, or nil for genuinely unassigned) and marshals as
+	// `assigned_user`. False means nobody asked, or the resolver failed, and
+	// MarshalJSON drops the field so callers refetch instead of reading nil as
+	// "unassigned". Never persisted; set by the governance read paths.
+	AssigneeResolved bool `gorm:"-" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -325,6 +324,16 @@ type TableVirtualKey struct {
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
+}
+
+// AssignedUser is the minimal projection of the user a virtual key is assigned to,
+// carried on read responses so callers do not need a second, per-key lookup. It is
+// deliberately not the full user row: a list response has no business shipping
+// claims, config, or role.
+type AssignedUser struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // TableName sets the table name for each model
@@ -352,15 +361,33 @@ func (vk *TableVirtualKey) VaultStoreSelfManaged() {}
 // MarshalJSON serializes TableVirtualKey with Value emitted as a resolved plain string,
 // never as a SecretVar object. This ensures all REST API responses return "bfvk-xxx"
 // rather than {"value":"bfvk-xxx","type":"plain_text"}.
+//
+// It also enforces the tri-state assigned_user contract: the field is emitted (as a user
+// or as null) only when AssigneeResolved says the lookup actually settled the question,
+// and is dropped otherwise. Without that, an unresolved assignee would serialize as null
+// and be indistinguishable from a genuinely unassigned key, so the UI would render "no
+// assignee" for a key that has one instead of refetching it.
 func (vk TableVirtualKey) MarshalJSON() ([]byte, error) {
 	type Alias TableVirtualKey
-	return json.Marshal(&struct {
+	b, err := json.Marshal(&struct {
 		Alias
 		Value string `json:"value"`
 	}{
 		Alias: Alias(vk),
 		Value: vk.Value.GetValue(),
 	})
+	if err != nil || vk.AssigneeResolved {
+		return b, err
+	}
+	// Unresolved: drop the key. Only this branch pays the extra round-trip, and the
+	// governance read paths mark every key they return as resolved (OSS included, where
+	// "no user tables" is itself a settled answer), so it stays off the common path.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return nil, err
+	}
+	delete(fields, "assigned_user")
+	return json.Marshal(fields)
 }
 
 // HasActivePreviousValue reports whether the VK carries a rotated-out value
@@ -388,13 +415,44 @@ func (vk *TableVirtualKey) IsExpiredAt(now time.Time) bool {
 	return !now.UTC().Before(vk.ExpiresAt.UTC())
 }
 
-// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
-// a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
+// NormalizeVirtualKeyOwnerID is normalizeVirtualKeyOwnerID for callers outside this package: an
+// owner id that is blank, or only whitespace, means no owner.
+func NormalizeVirtualKeyOwnerID(id *string) *string { return normalizeVirtualKeyOwnerID(id) }
+
+func normalizeVirtualKeyOwnerID(id *string) *string {
+	if id != nil && strings.TrimSpace(*id) == "" {
+		return nil
+	}
+	return id
+}
+
+// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer vs business unit),
+// computes a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
 // value before writing to the database.
 func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
-	// Enforce mutual exclusion: VK can belong to either Team OR Customer, not both
-	if vk.TeamID != nil && vk.CustomerID != nil {
-		return fmt.Errorf("virtual key cannot belong to both team and customer")
+	// A blank owner id is no owner. JSON decoding turns "team_id": "" into a non-nil pointer to an
+	// empty string, and a caller that builds the row itself can do the same, so normalize before
+	// counting: otherwise a blank id both persists as an owner nothing resolves and makes a request
+	// naming one real owner alongside a blank one look like two.
+	vk.TeamID = normalizeVirtualKeyOwnerID(vk.TeamID)
+	vk.CustomerID = normalizeVirtualKeyOwnerID(vk.CustomerID)
+	vk.BusinessUnitID = normalizeVirtualKeyOwnerID(vk.BusinessUnitID)
+
+	// Enforce mutual exclusion: a VK belongs to at most one of Team, Customer or Business Unit.
+	// Checked as a count rather than pairwise so adding a fourth owner cannot silently leave a
+	// pair unguarded.
+	owners := 0
+	if vk.TeamID != nil {
+		owners++
+	}
+	if vk.CustomerID != nil {
+		owners++
+	}
+	if vk.BusinessUnitID != nil {
+		owners++
+	}
+	if owners > 1 {
+		return fmt.Errorf("virtual key cannot belong to more than one of team, customer or business unit")
 	}
 
 	// Hash must be computed before encryption (from plaintext value).
