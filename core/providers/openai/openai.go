@@ -1480,6 +1480,17 @@ func HandleOpenAIChatCompletionStreaming(
 				response.Choices = []schemas.BifrostResponseChoice{}
 			}
 
+			// ModelScope-style upstreams put a full `message` object next to
+			// `delta` in every stream chunk, and BifrostResponseChoice decodes
+			// both embedded shapes. chat.completion.chunk choices carry only
+			// delta, so drop the non-stream shape whenever a delta is present
+			// (#7294). A message-only frame (no delta) is left untouched.
+			for i := range response.Choices {
+				if response.Choices[i].ChatStreamResponseChoice != nil {
+					response.Choices[i].ChatNonStreamResponseChoice = nil
+				}
+			}
+
 			// Capture every frame read, on both ingresses. The fallback path cannot do
 			// this inside its spread loop: a usage-only frame has choices: [], and
 			// ToBifrostResponsesStreamResponse returns nil for that (mux.go:1710), so
@@ -4129,6 +4140,11 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
+// Decision is not supported by the OpenAI provider.
+func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+}
+
 // HandleOpenAIRerankRequest handles rerank requests for custom OpenAI-compatible APIs.
 func HandleOpenAIRerankRequest(
 	ctx *schemas.BifrostContext,
@@ -4258,11 +4274,15 @@ func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	return HandleOpenAIVideoRetrieveRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/videos/"+videoID, schemas.VideoRetrieveRequest),
+		provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID, schemas.VideoRetrieveRequest),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -4287,6 +4307,10 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -4298,7 +4322,7 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL: /v1/videos/{video_id}/content
-	requestURL := provider.buildRequestURL(ctx, "/v1/videos/"+videoID+"/content", schemas.VideoDownloadRequest)
+	requestURL := provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID+"/content", schemas.VideoDownloadRequest)
 
 	if request.Variant != nil && *request.Variant != "" {
 		// attach variant to url if present
@@ -4366,11 +4390,15 @@ func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	return HandleOpenAIVideoDeleteRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/videos/"+videoID, schemas.VideoDeleteRequest),
+		provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID, schemas.VideoDeleteRequest),
 		videoID,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -6132,6 +6160,10 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -6144,7 +6176,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -6208,6 +6240,10 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -6220,7 +6256,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -6301,6 +6337,10 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -6310,7 +6350,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -6414,6 +6454,10 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 	}
 
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -6426,7 +6470,7 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/videos/"+videoID+"/remix", schemas.VideoRemixRequest))
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID+"/remix", schemas.VideoRemixRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
@@ -6705,6 +6749,10 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 	if request.BatchID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
 	}
+	escapedBatchID, idErr := providerUtils.EscapeResourceID(request.BatchID, "batch_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -6717,7 +6765,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + escapedBatchID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -6779,6 +6827,10 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 	if request.BatchID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
 	}
+	escapedBatchID, idErr := providerUtils.EscapeResourceID(request.BatchID, "batch_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -6791,7 +6843,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID + "/cancel")
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + escapedBatchID + "/cancel")
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -6899,6 +6951,10 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	if batchResp.OutputFileID == nil || *batchResp.OutputFileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch results not available: output_file_id is empty (batch may not be completed)", nil)
 	}
+	escapedOutputFileID, idErr := providerUtils.EscapeResourceID(*batchResp.OutputFileID, "output_file_id")
+	if idErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("provider returned an invalid output_file_id", nil)
+	}
 
 	// Download the output file - try each key
 	var lastErr *schemas.BifrostError
@@ -6908,7 +6964,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + *batchResp.OutputFileID + "/content")
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedOutputFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -7254,6 +7310,10 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerRetrieveRequest); err != nil {
 		return nil, err
@@ -7267,7 +7327,7 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+request.ContainerID, schemas.ContainerRetrieveRequest))
+		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+escapedContainerID, schemas.ContainerRetrieveRequest))
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -7361,6 +7421,10 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerDeleteRequest); err != nil {
 		return nil, err
@@ -7374,7 +7438,7 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+request.ContainerID, schemas.ContainerDeleteRequest))
+		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+escapedContainerID, schemas.ContainerDeleteRequest))
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -7458,6 +7522,10 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -7467,7 +7535,7 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	endpoint := fmt.Sprintf("/v1/containers/%s/files", request.ContainerID)
+	endpoint := fmt.Sprintf("/v1/containers/%s/files", escapedContainerID)
 	req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileCreateRequest))
 	req.Header.SetMethod(http.MethodPost)
 
@@ -7567,6 +7635,10 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if len(keys) == 0 {
 		if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
@@ -7601,7 +7673,7 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 	}
 
 	// Build URL with query parameters
-	endpoint := fmt.Sprintf("/v1/containers/%s/files", request.ContainerID)
+	endpoint := fmt.Sprintf("/v1/containers/%s/files", escapedContainerID)
 	requestURL := provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileListRequest)
 
 	// Add query parameters
@@ -7724,6 +7796,14 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -7732,7 +7812,7 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
+		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", escapedContainerID, escapedFileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileRetrieveRequest))
 		req.Header.SetMethod(http.MethodGet)
 
@@ -7838,6 +7918,14 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -7846,7 +7934,7 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s/content", request.ContainerID, request.FileID)
+		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s/content", escapedContainerID, escapedFileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileContentRequest))
 		req.Header.SetMethod(http.MethodGet)
 
@@ -7937,6 +8025,14 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -7945,7 +8041,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
+		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", escapedContainerID, escapedFileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileDeleteRequest))
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
@@ -8040,6 +8136,7 @@ func (provider *OpenAIProvider) Passthrough(
 
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 
+	providerUtils.StripCallerAuthForInsecureURL(url, req.SafeHeaders)
 	for k, v := range req.SafeHeaders {
 		fasthttpReq.Header.Set(k, v)
 	}
@@ -8136,6 +8233,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 
+	providerUtils.StripCallerAuthForInsecureURL(url, req.SafeHeaders)
 	for k, v := range req.SafeHeaders {
 		fasthttpReq.Header.Set(k, v)
 	}

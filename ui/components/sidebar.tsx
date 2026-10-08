@@ -21,6 +21,7 @@ import {
 	Globe,
 	Hexagon,
 	History,
+	House,
 	KeyRound,
 	Landmark,
 	LaptopMinimalCheck,
@@ -52,6 +53,8 @@ import {
 	Webhook,
 } from "lucide-react";
 
+import { WarpIcon } from "@/components/ui/icons";
+import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Sidebar,
@@ -69,9 +72,11 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { isEnterpriseOnlyRoute } from "@/lib/constants/enterprise";
+import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
@@ -472,6 +477,10 @@ const SidebarItemView = ({
 	);
 };
 
+function WarpNavIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
+	return <WarpIcon className={cn(className, "scale-125")} {...props} />;
+}
+
 export default function AppSidebar() {
 	const pathname = useLocation({ select: (l) => l.pathname });
 	const search = useLocation({ select: (l) => l.searchStr ?? "" });
@@ -521,6 +530,8 @@ export default function AppSidebar() {
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
+	const hasWarpAccess = useRbac(RbacResource.Warp, RbacOperation.View);
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
@@ -570,6 +581,17 @@ export default function AppSidebar() {
 
 	const items = useMemo(
 		() => [
+			...(IS_ENTERPRISE
+				? [
+						{
+							title: "Home",
+							url: "/workspace/home",
+							icon: House,
+							description: "Your usage, keys, budgets and access",
+							hasAccess: true,
+						},
+					]
+				: []),
 			{
 				title: "Observability",
 				url: "/workspace/logs",
@@ -960,7 +982,7 @@ export default function AppSidebar() {
 				url: "/workspace/config",
 				icon: Settings2Icon,
 				description: "Bifrost settings",
-				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
+				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess || (hasWarpAccess && isWarpEnabled),
 				subItems: [
 					{
 						title: "Client Settings",
@@ -989,6 +1011,13 @@ export default function AppSidebar() {
 						icon: ShieldCheck,
 						description: "Security settings",
 						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Warp",
+						url: "/workspace/config/warp",
+						icon: WarpNavIcon,
+						description: "Warp agent configuration",
+						hasAccess: hasWarpAccess && isWarpEnabled,
 					},
 					...(IS_ENTERPRISE
 						? [
@@ -1076,6 +1105,8 @@ export default function AppSidebar() {
 			hasAccessProfilesAccess,
 			hasProjectsAccess,
 			hasFeatureFlagsAccess,
+			isWarpEnabled,
+			hasWarpAccess,
 			hasDevicesAccess,
 			hasInventoryAccess,
 			hasEdgeConfigAccess,
