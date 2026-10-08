@@ -22,7 +22,7 @@ export const REQUEST_TYPE_GROUPS = [
 	},
 	{
 		label: "Audio",
-		types: ["speech", "transcription"],
+		types: ["speech", "transcription", "live"],
 	},
 	{
 		label: "Image",
@@ -131,6 +131,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat", "rerank", "audio"],
 	},
 	{
+		key: "input_cost_per_token_above_100k_tokens",
+		label: "Input / token (>100k)",
+		group: "chat",
+		requestTypeGroups: ["chat", "embedding", "rerank"],
+	},
+	{
+		key: "output_cost_per_token_above_100k_tokens",
+		label: "Output / token (>100k)",
+		group: "chat",
+		requestTypeGroups: ["chat", "rerank", "audio"],
+	},
+	{
 		key: "input_cost_per_token_above_200k_tokens",
 		label: "Input / token (>200k)",
 		group: "chat",
@@ -191,6 +203,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "input_cost_per_token_above_272k_tokens_ultrafast",
+		label: "Input / token (>272k, ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "output_cost_per_token_above_272k_tokens_ultrafast",
+		label: "Output / token (>272k, ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_creation_input_token_cost",
 		label: "Cache creation / token",
 		group: "chat",
@@ -223,6 +247,24 @@ export const PRICING_FIELDS = [
 	{
 		key: "cache_creation_input_token_cost_above_1hr_above_200k_tokens",
 		label: "Cache creation / token (>1hr, >200k)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_creation_input_token_cost_above_100k_tokens",
+		label: "Cache creation / token (>100k)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_read_input_token_cost_above_100k_tokens",
+		label: "Cache read / token (>100k)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_creation_input_token_cost_above_1hr_above_100k_tokens",
+		label: "Cache creation / token (>1hr, >100k)",
 		group: "chat",
 		requestTypeGroups: ["chat"],
 	},
@@ -287,6 +329,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_read_input_token_cost_above_272k_tokens_ultrafast",
+		label: "Cache read / token (>272k, ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_creation_input_token_cost_priority",
 		label: "Cache creation / token (priority)",
 		group: "chat",
@@ -317,8 +365,20 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
-		key: "search_context_cost_per_query",
-		label: "Search context / query",
+		key: "cache_creation_input_token_cost_above_272k_tokens_ultrafast",
+		label: "Cache creation / token (>272k, ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_creation_input_token_cost_above_272k_tokens_priority",
+		label: "Cache creation / token (>272k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "web_search_cost_per_request",
+		label: "Web search / request",
 		group: "chat",
 		requestTypeGroups: ["chat", "rerank"],
 	},
